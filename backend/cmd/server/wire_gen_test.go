@@ -85,6 +85,9 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // quotaFlusher
 		nil, // imageAssetCleanup
 		nil, // imageGenerationDispatcher
+		nil, // upstreamBillingProbe
+		nil, // auditLog
+		nil, // promptAudit
 	)
 
 	require.NotPanics(t, func() {
