@@ -662,9 +662,72 @@ setup_directories() {
     print_success "$(msg 'dirs_configured')"
 }
 
+# Ensure a persistent TOTP_ENCRYPTION_KEY exists for AES-256-GCM encryption.
+# This key protects channel_monitor API keys, TOTP secrets, image credentials,
+# backup keys, etc. Without a fixed key, every restart generates a new random
+# key (see config.go auto-generation), making all previously encrypted data
+# undecryptable.
+#
+# Behavior:
+# - If /opt/sub2api/.env already has TOTP_ENCRYPTION_KEY: keep it (idempotent).
+# - If .env exists but key is missing: append the key line.
+# - If .env doesn't exist: create it with the key, mode 0600, owned by SERVICE_USER.
+# - The key is generated via openssl rand -hex 32 (64 hex chars = 32 bytes for AES-256).
+ensure_encryption_key() {
+    local env_file="${INSTALL_DIR}/.env"
+    local key_line
+
+    # Check if key already present in existing .env
+    if [ -f "$env_file" ]; then
+        if grep -qE "^TOTP_ENCRYPTION_KEY=[0-9a-fA-F]{64}$" "$env_file"; then
+            print_info "TOTP_ENCRYPTION_KEY already present in ${env_file}, keeping existing key"
+            return 0
+        fi
+    fi
+
+    # Generate a new key
+    local new_key
+    if command -v openssl >/dev/null 2>&1; then
+        new_key=$(openssl rand -hex 32)
+    else
+        # Fallback: read from /dev/urandom and hex-encode
+        new_key=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    fi
+
+    if [ -z "$new_key" ] || [ ${#new_key} -ne 64 ]; then
+        print_error "Failed to generate TOTP_ENCRYPTION_KEY"
+        return 1
+    fi
+
+    key_line="TOTP_ENCRYPTION_KEY=${new_key}"
+
+    if [ -f "$env_file" ]; then
+        # Append to existing .env (preserve other vars)
+        echo "$key_line" >> "$env_file"
+        print_info "Appended TOTP_ENCRYPTION_KEY to existing ${env_file}"
+    else
+        # Create new .env with strict permissions
+        echo "$key_line" > "$env_file"
+        chmod 0600 "$env_file"
+        chown "${SERVICE_USER}:${SERVICE_USER}" "$env_file"
+        print_info "Generated new TOTP_ENCRYPTION_KEY in ${env_file}"
+    fi
+
+    # Warn the user to back up the key
+    echo ""
+    print_info "IMPORTANT: Back up this encryption key securely. Losing it means"
+    print_info "all encrypted data (channel_monitor API keys, TOTP secrets, image"
+    print_info "credentials, backups) becomes unrecoverable."
+    echo "  Key file: ${env_file}"
+    echo ""
+}
+
 # Install systemd service
 install_service() {
     print_info "$(msg 'installing_service')"
+
+    # Ensure persistent encryption key exists BEFORE writing service file
+    ensure_encryption_key
 
     # Create service file with configured host and port
     cat > /etc/systemd/system/sub2api.service << EOF
@@ -692,6 +755,9 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/opt/sub2api
+
+# Load persistent env vars (includes TOTP_ENCRYPTION_KEY for AES-256-GCM)
+EnvironmentFile=-/opt/sub2api/.env
 
 # Environment - Server configuration
 Environment=GIN_MODE=release
