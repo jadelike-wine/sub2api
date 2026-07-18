@@ -112,10 +112,8 @@ func TestExtractImageSize_EmptySize(t *testing.T) {
 func TestExtractImageSize_InvalidSize(t *testing.T) {
 	svc := &AntigravityGatewayService{}
 
-	body := []byte(`{"generationConfig":{"imageConfig":{"imageSize":"3K"}}}`)
-	require.Equal(t, "2K", NormalizeImageBillingTierOrDefault(svc.extractImageInputSize(body)))
-
-	body = []byte(`{"generationConfig":{"imageConfig":{"imageSize":"8K"}}}`)
+	// 注：3K 现为有效 billing tier（见 image_billing_size.go），不再视为无效。
+	body := []byte(`{"generationConfig":{"imageConfig":{"imageSize":"8K"}}}`)
 	require.Equal(t, "2K", NormalizeImageBillingTierOrDefault(svc.extractImageInputSize(body)))
 
 	body = []byte(`{"generationConfig":{"imageConfig":{"imageSize":"invalid"}}}`)
