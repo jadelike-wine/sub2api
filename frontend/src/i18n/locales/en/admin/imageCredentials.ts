@@ -175,6 +175,23 @@ export default {
       currentValue: 'Current effective value: {value}',
       notConfigured: 'Not configured (using default {default})',
       hint: 'When the limit is reached, new requests return 409 and prompt the user to retry later. Set to 0 or leave unconfigured to disable the limit.'
+    },
+    // Feature toggle
+    enabled: {
+      title: 'AI Image Generation Toggle',
+      description: 'Control whether the AI image generation feature is available to all users. When disabled, all generation endpoints return 403. Falls back to config.yaml image_generation.enabled when not configured.',
+      enable: 'Enable',
+      disable: 'Disable',
+      enabled: 'Enabled',
+      disabled: 'Disabled',
+      save: 'Save Toggle',
+      saving: 'Saving...',
+      saved: 'Toggle updated',
+      saveError: 'Failed to save toggle',
+      loadError: 'Failed to load toggle status',
+      notConfigured: 'Not configured (using default: {default})',
+      currentValue: 'Current effective value: {value}',
+      hint: 'After enabling, you also need to configure Agnes credentials and a storage driver for users to generate images. Changes take effect immediately for new requests.'
     }
   }
 }

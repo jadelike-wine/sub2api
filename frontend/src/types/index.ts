@@ -2389,3 +2389,22 @@ export interface ImageGenerationConfig {
 export interface UpdateImageGenerationConfigRequest {
   max_concurrent_per_user: number
 }
+
+/**
+ * AI 生图总开关状态（管理员后台可改）。
+ * enabled: 当前生效值（settings 覆盖 > config 默认）。
+ * config_default: config.yaml 中的默认值（供前端展示"未配置时回退到 X"）。
+ * configured: 是否已在后台显式配置（true=使用 settings 值，false=使用 config 默认）。
+ */
+export interface ImageGenerationEnabledConfig {
+  enabled: boolean
+  config_default: boolean
+  configured: boolean
+}
+
+/**
+ * 更新 AI 生图总开关的请求体。
+ */
+export interface UpdateImageGenerationEnabledRequest {
+  enabled: boolean
+}

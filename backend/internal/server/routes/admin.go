@@ -156,6 +156,13 @@ func registerImageGenerationAdminRoutes(admin *gin.RouterGroup, h *handler.Handl
 		genConfig.GET("", h.Admin.ImageGeneration.GetGenerationConfig)
 		genConfig.PUT("", h.Admin.ImageGeneration.UpdateGenerationConfig)
 	}
+
+	// AI 生图总开关（后台可控，DB 未配置时回退到 config.yaml 的 image_generation.enabled）
+	enabled := admin.Group("/image-generation-enabled")
+	{
+		enabled.GET("", h.Admin.ImageGeneration.GetImageGenerationEnabled)
+		enabled.PUT("", h.Admin.ImageGeneration.UpdateImageGenerationEnabled)
+	}
 }
 
 func registerPromptAuditRoutes(admin *gin.RouterGroup, h *handler.Handlers) {

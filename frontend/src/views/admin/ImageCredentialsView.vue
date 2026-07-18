@@ -82,6 +82,57 @@
         </p>
       </section>
 
+      <!-- AI 生图总开关 -->
+      <section class="mb-6 rounded-2xl border border-gray-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-800">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.imageCredentials.enabled.title') }}
+            </h3>
+            <p class="mt-1 max-w-2xl text-xs text-gray-500 dark:text-dark-400">
+              {{ t('admin.imageCredentials.enabled.description') }}
+            </p>
+            <p class="mt-2 text-xs text-gray-400 dark:text-dark-500">
+              <span v-if="enabledOriginal.configured">
+                {{ t('admin.imageCredentials.enabled.currentValue', { value: enabledOriginal.enabled ? t('admin.imageCredentials.enabled.enabled') : t('admin.imageCredentials.enabled.disabled') }) }}
+              </span>
+              <span v-else>
+                {{ t('admin.imageCredentials.enabled.notConfigured', { default: enabledOriginal.config_default ? t('admin.imageCredentials.enabled.enabled') : t('admin.imageCredentials.enabled.disabled') }) }}
+              </span>
+            </p>
+          </div>
+          <div class="flex shrink-0 items-center gap-3">
+            <span
+              v-if="!enabledLoading"
+              class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium"
+              :class="enabledOriginal.enabled
+                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'"
+            >
+              <span class="h-1.5 w-1.5 rounded-full" :class="enabledOriginal.enabled ? 'bg-green-500' : 'bg-red-500'" />
+              {{ enabledOriginal.enabled ? t('admin.imageCredentials.enabled.enabled') : t('admin.imageCredentials.enabled.disabled') }}
+            </span>
+            <button
+              type="button"
+              class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              :class="enabledForm.enabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'"
+              :disabled="enabledLoading || enabledSaving"
+              role="switch"
+              :aria-checked="enabledForm.enabled"
+              @click="onToggleEnabled"
+            >
+              <span
+                class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                :class="enabledForm.enabled ? 'translate-x-5' : 'translate-x-0'"
+              />
+            </button>
+          </div>
+        </div>
+        <p class="mt-3 text-xs text-gray-400 dark:text-dark-500">
+          {{ t('admin.imageCredentials.enabled.hint') }}
+        </p>
+      </section>
+
       <!-- Asset Cleanup Panel -->
       <AssetCleanupPanel class="mb-6" />
 
@@ -469,6 +520,7 @@ import type {
   CreateImageCredentialRequest,
   ImageCredentialStatus,
   ImageGenerationConfig,
+  ImageGenerationEnabledConfig,
   ImagePriceConfig,
   ImageProviderCredential,
   ImageStorageStatus,
@@ -523,6 +575,16 @@ const genConfigOriginal = ref<ImageGenerationConfig>({
 const genConfigForm = ref<{ maxConcurrentPerUser: number | string | null }>({
   maxConcurrentPerUser: null,
 })
+
+// AI 生图总开关
+const enabledLoading = ref(false)
+const enabledSaving = ref(false)
+const enabledOriginal = ref<ImageGenerationEnabledConfig>({
+  enabled: false,
+  config_default: false,
+  configured: false,
+})
+const enabledForm = ref<{ enabled: boolean }>({ enabled: false })
 
 interface FormState {
   name: string
@@ -625,7 +687,7 @@ async function loadStorageStatus() {
 
 async function loadAll() {
   loading.value = true
-  await Promise.all([loadCredentials(), loadStorageStatus(), loadPricing(), loadGenerationConfig()])
+  await Promise.all([loadCredentials(), loadStorageStatus(), loadPricing(), loadGenerationConfig(), loadEnabled()])
   loading.value = false
 }
 
@@ -731,6 +793,42 @@ async function onSaveGenerationConfig() {
     ElMessage.error(backendMsg ? `${prefix}: ${backendMsg}` : prefix)
   } finally {
     genConfigSaving.value = false
+  }
+}
+
+// ==================== Feature Toggle ====================
+
+async function loadEnabled() {
+  enabledLoading.value = true
+  try {
+    const cfg = await adminImageGenerationAPI.getImageGenerationEnabled()
+    enabledOriginal.value = { ...cfg }
+    enabledForm.value = { enabled: cfg.enabled }
+  } catch (err) {
+    console.error(t('admin.imageCredentials.enabled.loadError'), err)
+  } finally {
+    enabledLoading.value = false
+  }
+}
+
+async function onToggleEnabled() {
+  // 立即更新 UI（optimistic），失败时回滚
+  const previous = enabledForm.value.enabled
+  const next = !previous
+  enabledForm.value = { enabled: next }
+  enabledSaving.value = true
+  try {
+    const updated = await adminImageGenerationAPI.updateImageGenerationEnabled({ enabled: next })
+    enabledOriginal.value = { ...updated }
+    enabledForm.value = { enabled: updated.enabled }
+    ElMessage.success(t('admin.imageCredentials.enabled.saved'))
+  } catch (err: any) {
+    enabledForm.value = { enabled: previous }
+    const backendMsg = err?.message
+    const prefix = t('admin.imageCredentials.enabled.saveError')
+    ElMessage.error(backendMsg ? `${prefix}: ${backendMsg}` : prefix)
+  } finally {
+    enabledSaving.value = false
   }
 }
 

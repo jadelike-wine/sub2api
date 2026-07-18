@@ -1092,3 +1092,25 @@ func (s *SettingService) SetImageMaxConcurrentPerUser(ctx context.Context, value
 	}
 	return s.settingRepo.Set(ctx, SettingKeyImageMaxConcurrentPerUser, strconv.Itoa(value))
 }
+
+// GetImageGenerationEnabled 读取管理员配置的 AI 生图总开关。
+// 返回值：
+//   - enabled：当前开关值（仅当 configured=true 时有效）。
+//   - configured：是否已在后台显式配置（true=使用 settings 值，false=应回退 config 默认）。
+//   - err：DB 读取错误（ErrMapping 之外）。
+func (s *SettingService) GetImageGenerationEnabled(ctx context.Context) (enabled bool, configured bool, err error) {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyImageGenerationEnabled)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("get image_generation_enabled: %w", err)
+	}
+	return raw == "true", true, nil
+}
+
+// SetImageGenerationEnabled 写入管理员配置的 AI 生图总开关。
+// enabled 以 "true"/"false" 字符串落库。
+func (s *SettingService) SetImageGenerationEnabled(ctx context.Context, enabled bool) error {
+	return s.settingRepo.Set(ctx, SettingKeyImageGenerationEnabled, strconv.FormatBool(enabled))
+}

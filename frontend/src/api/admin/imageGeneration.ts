@@ -13,12 +13,14 @@ import type {
   ImageAssetCleanupRequest,
   ImageAssetCleanupResult,
   ImageGenerationConfig,
+  ImageGenerationEnabledConfig,
   ImagePriceConfig,
   ImageProviderCredential,
   ImageStorageStatus,
   TestImageCredentialResult,
   UpdateImageCredentialRequest,
   UpdateImageGenerationConfigRequest,
+  UpdateImageGenerationEnabledRequest,
 } from '@/types'
 
 // ==================== Credentials ====================
@@ -176,6 +178,9 @@ export const adminImageGenerationAPI = {
   // Generation Config
   getGenerationConfig,
   updateGenerationConfig,
+  // Feature toggle
+  getImageGenerationEnabled,
+  updateImageGenerationEnabled,
 }
 
 export default adminImageGenerationAPI
@@ -223,6 +228,33 @@ export async function updateGenerationConfig(
 ): Promise<ImageGenerationConfig> {
   const { data } = await apiClient.put<ImageGenerationConfig>(
     '/admin/image-generation-config',
+    payload
+  )
+  return data
+}
+
+// ==================== Feature Toggle ====================
+
+/**
+ * 读取 AI 生图总开关。
+ * GET /admin/image-generation-enabled
+ */
+export async function getImageGenerationEnabled(): Promise<ImageGenerationEnabledConfig> {
+  const { data } = await apiClient.get<ImageGenerationEnabledConfig>(
+    '/admin/image-generation-enabled'
+  )
+  return data
+}
+
+/**
+ * 更新 AI 生图总开关（修改后立即对新请求生效）。
+ * PUT /admin/image-generation-enabled
+ */
+export async function updateImageGenerationEnabled(
+  payload: UpdateImageGenerationEnabledRequest
+): Promise<ImageGenerationEnabledConfig> {
+  const { data } = await apiClient.put<ImageGenerationEnabledConfig>(
+    '/admin/image-generation-enabled',
     payload
   )
   return data

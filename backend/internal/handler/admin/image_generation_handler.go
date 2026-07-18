@@ -432,3 +432,89 @@ func (h *ImageGenerationHandler) UpdateGenerationConfig(c *gin.Context) {
 		Configured:           true,
 	})
 }
+
+// ==================== AI 生图总开关 ====================
+
+// imageGenerationEnabledResponse 是 AI 生图总开关的响应体。
+// 同时返回 settings 中的覆盖值和 config.yaml 默认值，便于前端展示"当前生效值"。
+type imageGenerationEnabledResponse struct {
+	// Enabled 当前生效值（settings 覆盖 > config 默认）。
+	Enabled bool `json:"enabled"`
+	// ConfigDefault config.yaml 中的默认值（供前端展示"未配置时回退到 X"）。
+	ConfigDefault bool `json:"config_default"`
+	// Configured 是否已在后台显式配置（true=使用 settings 值，false=使用 config 默认）。
+	Configured bool `json:"configured"`
+}
+
+// imageGenerationEnabledRequest 是 AI 生图总开关的更新请求体。
+type imageGenerationEnabledRequest struct {
+	// Enabled 必填。true=启用 AI 生图，false=禁用。
+	Enabled *bool `json:"enabled"`
+}
+
+// GetImageGenerationEnabled 读取 AI 生图总开关。
+// GET /api/v1/admin/image-generation-enabled
+func (h *ImageGenerationHandler) GetImageGenerationEnabled(c *gin.Context) {
+	if h.settingService == nil {
+		response.InternalError(c, "setting service not configured")
+		return
+	}
+	configDefault := false
+	if h.cfg != nil {
+		configDefault = h.cfg.ImageGeneration.Enabled
+	}
+
+	enabled, configured, err := h.settingService.GetImageGenerationEnabled(c.Request.Context())
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	if !configured {
+		// 未配置：返回 config 默认值
+		response.Success(c, imageGenerationEnabledResponse{
+			Enabled:       configDefault,
+			ConfigDefault: configDefault,
+			Configured:    false,
+		})
+		return
+	}
+	response.Success(c, imageGenerationEnabledResponse{
+		Enabled:       enabled,
+		ConfigDefault: configDefault,
+		Configured:    true,
+	})
+}
+
+// UpdateImageGenerationEnabled 更新 AI 生图总开关。
+// PUT /api/v1/admin/image-generation-enabled
+// 修改后立即对新请求生效（每个入口 CreateConversation/CreateGeneration 等均读取此值）。
+func (h *ImageGenerationHandler) UpdateImageGenerationEnabled(c *gin.Context) {
+	if h.settingService == nil {
+		response.InternalError(c, "setting service not configured")
+		return
+	}
+	var req imageGenerationEnabledRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if req.Enabled == nil {
+		response.BadRequest(c, "enabled is required")
+		return
+	}
+
+	if err := h.settingService.SetImageGenerationEnabled(c.Request.Context(), *req.Enabled); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	configDefault := false
+	if h.cfg != nil {
+		configDefault = h.cfg.ImageGeneration.Enabled
+	}
+	response.Success(c, imageGenerationEnabledResponse{
+		Enabled:       *req.Enabled,
+		ConfigDefault: configDefault,
+		Configured:    true,
+	})
+}

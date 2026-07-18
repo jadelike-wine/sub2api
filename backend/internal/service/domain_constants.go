@@ -431,6 +431,11 @@ const (
 	// 修改后立即对新请求生效（每次 CreateGeneration 都读取此值）。
 	SettingKeyImageMaxConcurrentPerUser = "image_max_concurrent_per_user"
 
+	// SettingKeyImageGenerationEnabled 控制 AI 生图总开关（"true"/"false"）。
+	// 空 / 未配置时回退到 config.yaml 的 image_generation.enabled。
+	// 修改后立即对所有新请求生效（CreateConversation/CreateGeneration 等入口处检查）。
+	SettingKeyImageGenerationEnabled = "image_generation_enabled"
+
 	// =========================
 	// Claude Code Version Check
 	// =========================

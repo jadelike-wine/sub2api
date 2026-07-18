@@ -81,7 +81,7 @@ func NewImageGenerationService(
 
 // CreateConversation 创建用户的图片生成会话。
 func (s *ImageGenerationService) CreateConversation(ctx context.Context, userID int64, title string) (*ImageConversation, error) {
-	if !s.isEnabled() {
+	if !s.isEnabled(ctx) {
 		return nil, errImageDisabled()
 	}
 	return s.conversationRepo.Create(ctx, CreateImageConversationParams{
@@ -92,7 +92,7 @@ func (s *ImageGenerationService) CreateConversation(ctx context.Context, userID 
 
 // ListConversations 列出用户的会话（分页 + 关键词搜索）。
 func (s *ImageGenerationService) ListConversations(ctx context.Context, userID int64, filter ImageConversationFilter) (*ImageConversationList, error) {
-	if !s.isEnabled() {
+	if !s.isEnabled(ctx) {
 		return nil, errImageDisabled()
 	}
 	filter.UserID = userID
@@ -101,7 +101,7 @@ func (s *ImageGenerationService) ListConversations(ctx context.Context, userID i
 
 // GetConversation 获取用户会话详情（附带 user_id 隔离）。
 func (s *ImageGenerationService) GetConversation(ctx context.Context, userID, id int64) (*ImageConversation, error) {
-	if !s.isEnabled() {
+	if !s.isEnabled(ctx) {
 		return nil, errImageDisabled()
 	}
 	return s.conversationRepo.GetByIDForOwner(ctx, userID, id)
@@ -109,7 +109,7 @@ func (s *ImageGenerationService) GetConversation(ctx context.Context, userID, id
 
 // UpdateConversation 更新会话标题。
 func (s *ImageGenerationService) UpdateConversation(ctx context.Context, userID, id int64, title string) (*ImageConversation, error) {
-	if !s.isEnabled() {
+	if !s.isEnabled(ctx) {
 		return nil, errImageDisabled()
 	}
 	trimmed := strings.TrimSpace(title)
@@ -119,7 +119,7 @@ func (s *ImageGenerationService) UpdateConversation(ctx context.Context, userID,
 // DeleteConversation 软删除会话及其下所有生成任务和资产。
 // S3 对象通过异步清理（本次实现先软删除数据库记录，S3 对象保留待后台补偿）。
 func (s *ImageGenerationService) DeleteConversation(ctx context.Context, userID, id int64) error {
-	if !s.isEnabled() {
+	if !s.isEnabled(ctx) {
 		return errImageDisabled()
 	}
 	// 1. 软删除会话下所有生成任务的资产
@@ -159,7 +159,7 @@ type CreateGenerationRequest struct {
 //  6. 异步启动处理（goroutine）
 //  7. 立即返回 generation_id
 func (s *ImageGenerationService) CreateGeneration(ctx context.Context, userID int64, req CreateGenerationRequest) (*ImageGeneration, error) {
-	if !s.isEnabled() {
+	if !s.isEnabled(ctx) {
 		return nil, errImageDisabled()
 	}
 
@@ -316,7 +316,7 @@ func (s *ImageGenerationService) resolveMaxConcurrentPerUser(ctx context.Context
 
 // GetGeneration 获取生成任务详情（附带 user_id 隔离）。
 func (s *ImageGenerationService) GetGeneration(ctx context.Context, userID, id int64) (*ImageGeneration, error) {
-	if !s.isEnabled() {
+	if !s.isEnabled(ctx) {
 		return nil, errImageDisabled()
 	}
 	return s.generationRepo.GetByIDForOwner(ctx, userID, id)
@@ -324,7 +324,7 @@ func (s *ImageGenerationService) GetGeneration(ctx context.Context, userID, id i
 
 // ListGenerationsByConversation 列出会话下的所有生成任务。
 func (s *ImageGenerationService) ListGenerationsByConversation(ctx context.Context, userID, conversationID int64) ([]*ImageGeneration, error) {
-	if !s.isEnabled() {
+	if !s.isEnabled(ctx) {
 		return nil, errImageDisabled()
 	}
 	// 先校验会话归属
@@ -336,7 +336,7 @@ func (s *ImageGenerationService) ListGenerationsByConversation(ctx context.Conte
 
 // ListGenerations 列出用户的生成任务（分页）。
 func (s *ImageGenerationService) ListGenerations(ctx context.Context, userID int64, filter ImageGenerationFilter) (*ImageGenerationList, error) {
-	if !s.isEnabled() {
+	if !s.isEnabled(ctx) {
 		return nil, errImageDisabled()
 	}
 	filter.UserID = userID
@@ -345,7 +345,7 @@ func (s *ImageGenerationService) ListGenerations(ctx context.Context, userID int
 
 // DeleteGeneration 软删除生成任务及其资产。
 func (s *ImageGenerationService) DeleteGeneration(ctx context.Context, userID, id int64) error {
-	if !s.isEnabled() {
+	if !s.isEnabled(ctx) {
 		return errImageDisabled()
 	}
 	_ = s.assetRepo.SoftDeleteByGeneration(ctx, userID, id)
@@ -883,7 +883,15 @@ func (s *ImageGenerationService) RecoverStaleGenerations(ctx context.Context) (i
 
 // ==================== 辅助方法 ====================
 
-func (s *ImageGenerationService) isEnabled() bool {
+// isEnabled 返回 AI 生图功能是否启用。
+// 逻辑：管理员后台显式配置（settings DB）优先；未配置时回退到 config.yaml 的
+// image_generation.enabled 默认值。DB 读写出错时静默回退配置默认，避免误伤可用态。
+func (s *ImageGenerationService) isEnabled(ctx context.Context) bool {
+	if s.settingService != nil {
+		if on, configured, err := s.settingService.GetImageGenerationEnabled(ctx); err == nil && configured {
+			return on
+		}
+	}
 	return s.cfg.Enabled
 }
 

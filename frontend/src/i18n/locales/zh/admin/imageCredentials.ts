@@ -182,6 +182,23 @@ export default {
       currentValue: '当前生效值：{value}',
       notConfigured: '未配置（使用默认值 {default}）',
       hint: '达到上限时新请求返回 409，提示用户稍后重试。设为 0 或不配置表示不限制。'
+    },
+    // 总开关
+    enabled: {
+      title: 'AI 生图总开关',
+      description: '控制是否开放 AI 生图功能给所有用户。关闭后所有图生成入口返回 403。未配置时回退到服务端 config.yaml 中的 image_generation.enabled。',
+      enable: '开启',
+      disable: '关闭',
+      enabled: '已开启',
+      disabled: '已关闭',
+      save: '保存开关',
+      saving: '保存中...',
+      saved: '开关已更新',
+      saveError: '保存开关失败',
+      loadError: '加载开关状态失败',
+      notConfigured: '未配置（使用默认值：{default}）',
+      currentValue: '当前生效值：{value}',
+      hint: '开启后还需配置好 Agnes 凭据与存储驱动，用户才能正常生图。修改后立即对所有新请求生效。'
     }
   }
 }
