@@ -637,12 +637,14 @@ func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
 	_ = s.cache.SetUpdateInfo(ctx, string(data), time.Duration(updateCacheTTL)*time.Second)
 }
 
-// compareVersions compares two semantic versions
+// compareVersions compares two semantic versions, supporting both three-segment
+// (major.minor.patch) and four-segment (major.minor.patch.build) forms.
+// Missing segments are treated as 0, so 0.1.161 > 0.1.160.1.
 func compareVersions(current, latest string) int {
 	currentParts := parseVersion(current)
 	latestParts := parseVersion(latest)
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		if currentParts[i] < latestParts[i] {
 			return -1
 		}
@@ -653,11 +655,11 @@ func compareVersions(current, latest string) int {
 	return 0
 }
 
-func parseVersion(v string) [3]int {
+func parseVersion(v string) [4]int {
 	v = strings.TrimPrefix(v, "v")
 	parts := strings.Split(v, ".")
-	result := [3]int{0, 0, 0}
-	for i := 0; i < len(parts) && i < 3; i++ {
+	result := [4]int{0, 0, 0, 0}
+	for i := 0; i < len(parts) && i < 4; i++ {
 		if parsed, err := strconv.Atoi(parts[i]); err == nil {
 			result[i] = parsed
 		}

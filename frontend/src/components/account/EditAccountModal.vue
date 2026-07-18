@@ -1558,7 +1558,7 @@
             <Select
               v-model="openAIResponsesMode"
               :options="openAIResponsesModeOptions"
-              :disabled="!openAITextGenerationCapabilityEnabled"
+              :disabled="!openAITextGenerationCapabilityEnabled || agnesChatImageAdapterEnabled"
               data-testid="openai-responses-mode-select"
             />
           </div>
@@ -1595,6 +1595,34 @@
             </label>
           </div>
           <p class="input-hint">{{ t('admin.accounts.openai.endpointCapabilitiesDesc') }}</p>
+        </div>
+      </div>
+
+      <!-- Agnes 2.0 Flash 多模态聊天图片适配开关 -->
+      <div
+        v-if="account?.platform === 'openai' && account?.type === 'apikey'"
+        class="space-y-3 border-t border-gray-200 pt-4 dark:border-dark-600"
+        data-testid="agnes-chat-image-adapter-block"
+      >
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.agnesChatImageAdapter') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.agnesChatImageAdapterDesc') }}
+            </p>
+          </div>
+          <Toggle
+            v-model="agnesChatImageAdapterEnabled"
+            data-testid="agnes-chat-image-adapter-toggle"
+            :aria-label="t('admin.accounts.openai.agnesChatImageAdapter')"
+          />
+        </div>
+        <div
+          v-if="agnesChatImageAdapterEnabled"
+          class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
+          data-testid="agnes-chat-image-adapter-locked-hint"
+        >
+          {{ t('admin.accounts.openai.agnesChatImageAdapterLocksResponses') }}
         </div>
       </div>
 
@@ -2810,6 +2838,8 @@ const openAILongContextBillingEnabled = ref(false)
 const editPlanType = ref<string>('')
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
+// Agnes 多模态聊天图片适配开关：开启时锁定 Responses 模式为 force_chat_completions
+const agnesChatImageAdapterEnabled = ref(false)
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
@@ -2944,6 +2974,13 @@ const openAIResponsesModeOptions = computed(() => [
   { value: 'force_responses', label: t('admin.accounts.openai.responsesModeForceResponses') },
   { value: 'force_chat_completions', label: t('admin.accounts.openai.responsesModeForceChatCompletions') }
 ])
+
+// Agnes 适配开关开启时，Responses 模式固定为 force_chat_completions 并禁用选择
+watch(agnesChatImageAdapterEnabled, (enabled) => {
+  if (enabled) {
+    openAIResponsesMode.value = 'force_chat_completions'
+  }
+})
 const openAITextEndpointCapabilityLabel = computed(() => {
   if (openAIResponsesMode.value === 'force_responses') {
     return t('admin.accounts.openai.capabilityResponses')
@@ -3244,6 +3281,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   editPlanType.value = ''
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
+  agnesChatImageAdapterEnabled.value = false
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   openAICompactModelMappings.value = []
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -3265,6 +3303,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     openAICompactMode.value = (extra?.openai_compact_mode as OpenAICompactMode) || 'auto'
     if (newAccount.type === 'apikey') {
       openAIResponsesMode.value = normalizeOpenAIResponsesMode(extra?.openai_responses_mode)
+      agnesChatImageAdapterEnabled.value = extra?.agnes_chat_image_adapter === true
       openAIEndpointCapabilities.value = readOpenAIEndpointCapabilities(
         newAccount.credentials as Record<string, unknown> | undefined
       )
@@ -4489,6 +4528,13 @@ const handleSubmit = async () => {
           delete newExtra.openai_responses_mode
         } else {
           newExtra.openai_responses_mode = openAIResponsesMode.value
+        }
+        if (agnesChatImageAdapterEnabled.value) {
+          newExtra.agnes_chat_image_adapter = true
+          // Agnes 适配要求强制 raw-CC，确保 Responses 模式被锁定
+          newExtra.openai_responses_mode = 'force_chat_completions'
+        } else {
+          delete newExtra.agnes_chat_image_adapter
         }
 			newExtra.upstream_billing_probe_enabled = upstreamBillingAutoProbeEnabled.value
 		}

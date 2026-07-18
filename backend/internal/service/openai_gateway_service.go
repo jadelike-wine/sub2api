@@ -434,6 +434,12 @@ type OpenAIGatewayService struct {
 	codexModelsManifestCache            codexModelsManifestCache
 	openaiCompatSessionResponses        sync.Map
 	openaiCompatAnthropicDigestSessions sync.Map
+
+	// agnesChatImageAdapter 用于 Agnes 2.0 Flash 多模态聊天图片适配：
+	// 将下游 OpenAI CC 请求中的 data:image/...;base64 图片上传到 R2，
+	// 替换为公网 HTTPS URL 后再以原始 CC 转发到 Agnes 上游。
+	// 通过 SetAgnesChatImageAdapter setter 注入；nil 表示未启用（不影响既有路径）。
+	agnesChatImageAdapter *AgnesChatImageAdapter
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -505,6 +511,16 @@ func NewOpenAIGatewayService(
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
+}
+
+// SetAgnesChatImageAdapter 注入 Agnes 多模态聊天图片适配器。
+// 由 wire_gen.go 调用，避免修改 NewOpenAIGatewayService 构造签名。
+// 传 nil 等同于未启用；不影响既有 OpenAI/Grok 路径。
+func (s *OpenAIGatewayService) SetAgnesChatImageAdapter(adapter *AgnesChatImageAdapter) {
+	if s == nil {
+		return
+	}
+	s.agnesChatImageAdapter = adapter
 }
 
 // ResolveChannelMapping 解析渠道级模型映射（代理到 ChannelService）

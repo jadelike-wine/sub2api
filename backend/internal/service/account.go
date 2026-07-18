@@ -1251,6 +1251,22 @@ func (a *Account) IsOpenAIApiKey() bool {
 	return a.IsOpenAI() && a.Type == AccountTypeAPIKey
 }
 
+// ExtraKeyAgnesChatImageAdapter 是账号 Extra 中标记启用 Agnes 多模态聊天图片适配的键。
+// 启用后，下游 OpenAI Chat Completions 请求中的 data:image/...;base64 图片会被
+// 自动上传到 Cloudflare R2 并替换为公网 HTTPS URL，再以原始 CC 转发到 Agnes 上游。
+// 仅对 platform=openai && type=apikey 账号生效。
+const ExtraKeyAgnesChatImageAdapter = "agnes_chat_image_adapter"
+
+// AgnesChatImageAdapterEnabled 报告该账号是否启用了 Agnes 多模态聊天图片适配。
+// 启用条件：OpenAI APIKey 账号 + Extra["agnes_chat_image_adapter"]=true。
+func (a *Account) AgnesChatImageAdapterEnabled() bool {
+	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra[ExtraKeyAgnesChatImageAdapter].(bool)
+	return ok && enabled
+}
+
 func (a *Account) GetOpenAIBaseURL() string {
 	if !a.IsOpenAI() {
 		return ""

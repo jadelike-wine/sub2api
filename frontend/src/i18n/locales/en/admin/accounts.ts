@@ -479,6 +479,11 @@ export default {
         responsesStatusAutoUnknown: 'Auto probe: unknown',
         responsesStatusForcedResponses: 'Forced Responses',
         responsesStatusForcedChatCompletions: 'Forced Chat Completions',
+        agnesChatImageAdapter: 'Agnes multimodal image adapter',
+        agnesChatImageAdapterDesc:
+          'For exposing Agnes 2.0 Flash and similar upstreams that only accept public image URLs as an OpenAI-compatible API Key account. When enabled, downstream OpenAI-style data:image base64 images are automatically uploaded to Cloudflare R2 and replaced with a public HTTPS URL before forwarding; public HTTPS URLs are passed through unchanged. Enabling this locks the Responses mode to "Force Chat Completions".',
+        agnesChatImageAdapterLocksResponses:
+          'Agnes image adapter is on; Responses mode is locked to "Force Chat Completions" (Agnes only supports /v1/chat/completions multimodal input).',
         planType: 'Plan tier (manual override)',
         planTypeDesc:
           "Manually correct this account's ChatGPT plan tier (Plus / Pro / Free). Note: a token refresh near expiry or a 429 rate-limit response will auto-overwrite this with the real tier.",

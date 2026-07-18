@@ -91,6 +91,13 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 
+	// Agnes 多模态聊天图片适配账号必须走原始 Chat Completions 转发，
+	// 不允许转换到 /v1/responses（Responses API 不支持 image_url 多模态适配）。
+	// 即便管理员误把 Responses 模式设为 auto/force_responses，这里也强制走 raw-CC。
+	if account.AgnesChatImageAdapterEnabled() {
+		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+	}
+
 	startTime := time.Now()
 
 	// 1. Parse Chat Completions request

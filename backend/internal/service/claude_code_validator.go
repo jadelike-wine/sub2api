@@ -319,12 +319,13 @@ func GetClaudeCodeVersion(ctx context.Context) string {
 	return ""
 }
 
-// CompareVersions 比较两个 semver 版本号
+// CompareVersions 比较两个版本号，支持三段（major.minor.patch）和四段（major.minor.patch.build）
 // 返回: -1 (a < b), 0 (a == b), 1 (a > b)
+// 缺失段视为 0，因此 0.1.161 > 0.1.160.1（第 3 段 161 > 160 即决出胜负）
 func CompareVersions(a, b string) int {
 	aParts := parseSemver(a)
 	bParts := parseSemver(b)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		if aParts[i] < bParts[i] {
 			return -1
 		}
@@ -335,12 +336,12 @@ func CompareVersions(a, b string) int {
 	return 0
 }
 
-// parseSemver 解析 semver 版本号为 [major, minor, patch]
-func parseSemver(v string) [3]int {
+// parseSemver 解析版本号为 [4]int，支持三段和四段，缺失段补 0
+func parseSemver(v string) [4]int {
 	v = strings.TrimPrefix(v, "v")
 	parts := strings.Split(v, ".")
-	result := [3]int{0, 0, 0}
-	for i := 0; i < len(parts) && i < 3; i++ {
+	result := [4]int{0, 0, 0, 0}
+	for i := 0; i < len(parts) && i < 4; i++ {
 		if parsed, err := strconv.Atoi(parts[i]); err == nil {
 			result[i] = parsed
 		}

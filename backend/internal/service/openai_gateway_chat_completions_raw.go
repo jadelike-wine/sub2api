@@ -106,6 +106,24 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 	upstreamBody = updatedBody
 
+	// Agnes 2.0 Flash 多模态聊天图片适配：
+	// 仅对 OpenAI APIKey 账号 + Extra["agnes_chat_image_adapter"]=true 生效，
+	// 将下游 data:image/...;base64 图片上传到 R2，替换为公网 HTTPS URL。
+	// 公网 HTTPS URL 透传不改写；非法 URL/超限图片返回 OpenAI 风格 invalid_request_error。
+	if account.AgnesChatImageAdapterEnabled() && s.agnesChatImageAdapter != nil {
+		adapted, adapterErr := s.agnesChatImageAdapter.AdaptBody(ctx, c, upstreamBody)
+		if adapterErr != nil {
+			var adapterErrTyped *AgnesChatImageAdapterError
+			if errors.As(adapterErr, &adapterErrTyped) {
+				writeChatCompletionsError(c, adapterErrTyped.StatusCode, adapterErrTyped.ErrType, adapterErrTyped.Message)
+			} else {
+				writeChatCompletionsError(c, http.StatusBadGateway, "api_error", "Agnes chat image adapter failed")
+			}
+			return nil, adapterErr
+		}
+		upstreamBody = adapted
+	}
+
 	// Grok Composer does not accept image_url parts directly, but Grok Build
 	// can describe the images first. Bridge only this exact failure mode.
 	token, tokenKind, err := s.getRequestCredential(ctx, c, account)

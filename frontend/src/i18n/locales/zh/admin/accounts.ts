@@ -580,6 +580,11 @@ export default {
         responsesStatusAutoUnknown: '自动探测：未探测',
         responsesStatusForcedResponses: '已强制 Responses',
         responsesStatusForcedChatCompletions: '已强制 Chat Completions',
+        agnesChatImageAdapter: 'Agnes 多模态图片适配',
+        agnesChatImageAdapterDesc:
+          '适用于将 Agnes 2.0 Flash 等仅支持公网图片 URL 的上游接入为 OpenAI 兼容 API Key 账号。开启后，下游 OpenAI 风格的 data:image base64 图片会被自动上传至 Cloudflare R2，并替换为公网 HTTPS URL 再转发；公网 HTTPS URL 直接透传。开启后 Responses 模式会被锁定为「强制 Chat Completions」。',
+        agnesChatImageAdapterLocksResponses:
+          '已开启 Agnes 图片适配，Responses 模式已锁定为「强制 Chat Completions」（Agnes 仅支持 /v1/chat/completions 多模态输入）。',
         planType: '订阅档位（手动覆盖）',
         planTypeDesc: '手动纠正本账号的 ChatGPT 订阅档位（Plus / Pro / Free）。注意：令牌临期刷新或命中 429 限流时，会用真实档位自动覆盖此处设置。',
         planTypeClear: '清空（自动识别）',

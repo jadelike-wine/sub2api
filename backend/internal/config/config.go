@@ -97,6 +97,49 @@ type Config struct {
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
 	ImageGeneration         ImageGenerationConfig         `mapstructure:"image_generation"`
 	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
+	AgnesChat               AgnesChatConfig               `mapstructure:"agnes_chat"`
+}
+
+// AgnesChatConfig 配置 Agnes 2.0 Flash 多模态聊天适配：
+// 将下游 OpenAI Chat Completions 中的 data:image/...;base64 图片上传到 Cloudflare R2，
+// 替换为公网可访问的 HTTPS URL，再以原始 Chat Completions 转发到 Agnes 上游。
+// 仅对账号 Extra["agnes_chat_image_adapter"]=true 的 OpenAI APIKey 账号生效。
+type AgnesChatConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+
+	// 单请求限制
+	MaxImagesPerRequest int   `mapstructure:"max_images_per_request"` // 单次请求最多图片数
+	MaxImageBytes       int64 `mapstructure:"max_image_bytes"`        // 单张图片解码后字节上限
+	MaxTotalBytes       int64 `mapstructure:"max_total_bytes"`        // 单次请求所有图片字节总和上限
+
+	// Cloudflare R2（S3 兼容）
+	R2 AgnesChatR2Config `mapstructure:"r2"`
+}
+
+// AgnesChatR2Config 是 Agnes 多模态聊天图片上传专用的 R2/S3 配置。
+// 与 ImageStorageConfig 隔离，避免污染生图资产桶。
+type AgnesChatR2Config struct {
+	Endpoint            string `mapstructure:"endpoint"` // e.g. https://<account_id>.r2.cloudflarestorage.com
+	Region              string `mapstructure:"region"`   // R2 用 "auto"
+	Bucket              string `mapstructure:"bucket"`
+	AccessKeyID         string `mapstructure:"access_key_id"`
+	SecretAccessKey     string `mapstructure:"secret_access_key"`
+	Prefix              string `mapstructure:"prefix"`              // S3 key 前缀，如 "agnes-chat"
+	ForcePathStyle      bool   `mapstructure:"force_path_style"`    // MinIO/路径风格桶；R2 默认 false
+	PublicBaseURL       string `mapstructure:"public_base_url"`     // 配了则返回 public_base_url/key 直链；否则 presigned
+	PresignExpiresSeconds int  `mapstructure:"presign_expires_seconds"` // presigned URL 有效期(秒)
+}
+
+// IsConfigured 检查 R2 必要字段是否已配置。
+// endpoint 是必需项：缺失会导致 S3 客户端回退到默认 AWS 地址，
+// 上传时才在运行时失败（表现为 502），而非启动期明确报错。
+func (c *AgnesChatR2Config) IsConfigured() bool {
+	return c.Endpoint != "" && c.Bucket != "" && c.AccessKeyID != "" && c.SecretAccessKey != ""
+}
+
+// Active 返回 Agnes 聊天图片适配是否可用：开关打开、R2 凭证齐全且限制有效
+func (c *AgnesChatConfig) Active() bool {
+	return c.Enabled && c.R2.IsConfigured() && c.MaxImagesPerRequest > 0 && c.MaxImageBytes > 0 && c.MaxTotalBytes > 0
 }
 
 // ImageGenerationConfig 配置 AI 图片生成功能（Agnes 上游 + AWS S3 持久化）。
@@ -2055,6 +2098,17 @@ func setDefaults() {
 	viper.SetDefault("image_storage.force_path_style", false)
 	viper.SetDefault("image_storage.presign_expiry_hours", 24)
 	viper.SetDefault("image_storage.max_download_bytes", 33554432)
+
+	// Agnes 2.0 Flash 多模态聊天图片适配（data URL → Cloudflare R2）
+	// 默认关闭：需要管理员显式配置 R2 凭证后启用
+	viper.SetDefault("agnes_chat.enabled", false)
+	viper.SetDefault("agnes_chat.max_images_per_request", 6)
+	viper.SetDefault("agnes_chat.max_image_bytes", 10485760)   // 10MB（解码后字节）
+	viper.SetDefault("agnes_chat.max_total_bytes", 52428800)   // 50MB（单请求总字节）
+	viper.SetDefault("agnes_chat.r2.region", "auto")
+	viper.SetDefault("agnes_chat.r2.prefix", "agnes-chat")
+	viper.SetDefault("agnes_chat.r2.force_path_style", false)
+	viper.SetDefault("agnes_chat.r2.presign_expires_seconds", 1800) // 30 分钟，与 OpenAI 客户端默认超时兼容
 
 	// Ops (vNext)
 	viper.SetDefault("ops.enabled", true)
