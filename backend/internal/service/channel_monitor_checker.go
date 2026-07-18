@@ -100,11 +100,35 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 
 	if !validateChallenge(respText, challenge.Expected) {
 		res.Status = MonitorStatusFailed
-		res.Message = truncateMessage(sanitizeErrorMessage(fmt.Sprintf("challenge mismatch (expected %s, got %q)", challenge.Expected, respText)))
+		res.Message = truncateMessage(sanitizeErrorMessage(challengeMismatchMessage(rawBody, respText, challenge.Expected)))
 		return res
 	}
 
 	return finalizeOperationalOrDegraded(res, latency, latencyMs)
+}
+
+// challengeMismatchMessage 生成 challenge 校验失败时的提示信息。
+//
+// 针对默认开启 reasoning 的 OpenAI 兼容上游（如 Agnes agnes-2.0-flash）在 max_tokens
+// 过小时的场景：reasoning_content 把整个 token 预算耗光，导致最终 content 为空 +
+// finish_reason=length。此时上游其实已成功调用并计费，通用的 "challenge mismatch"
+// 提示会让运维误以为是模型答错；改为返回明确且脱敏的提示，但仍记为 failed。
+//
+// 该判定基于 OpenAI Chat Completions 响应结构（choices.0.finish_reason /
+// choices.0.message.reasoning_content）；Anthropic / Gemini 响应不含这些字段，
+// 命中条件自然不成立，会回退到通用 challenge mismatch 提示，行为与改动前一致。
+//
+// 输出文本不含 prompt / 响应原文，避免泄露上游内容；最终仍由 sanitizeErrorMessage
+// 与 truncateMessage 兜底。
+func challengeMismatchMessage(rawBody, respText, expected string) string {
+	if strings.TrimSpace(respText) == "" {
+		finishReason := gjson.Get(rawBody, "choices.0.finish_reason").String()
+		reasoning := gjson.Get(rawBody, "choices.0.message.reasoning_content").String()
+		if finishReason == "length" && strings.TrimSpace(reasoning) != "" {
+			return "response truncated: reasoning consumed max_tokens before final content"
+		}
+	}
+	return fmt.Sprintf("challenge mismatch (expected %s, got %q)", expected, respText)
 }
 
 // finalizeOperationalOrDegraded 负责走到最后一步的 operational/degraded 判定。

@@ -91,8 +91,14 @@ const (
 
 	// monitorAnthropicAPIVersion Anthropic Messages API 版本头。
 	monitorAnthropicAPIVersion = "2023-06-01"
-	// monitorChallengeMaxTokens 单次 challenge 请求的 max_tokens（足够回答个位数算术）。
-	monitorChallengeMaxTokens = 50
+	// monitorChallengeMaxTokens 单次 challenge 请求的 max token 预算。
+	// 取 512 而非更小值：兼容默认开启 reasoning 的上游（如 Agnes agnes-2.0-flash），
+	// 避免 reasoning_content 占满 token 预算导致 final content 为空、finish_reason=length 的误报。
+	//
+	// 管理员可通过 body_override_mode=merge 覆盖该默认值。注意协议字段名不同：
+	//   - Chat Completions / Grok / Anthropic:  {"max_tokens": ...}
+	//   - OpenAI Responses:                     {"max_output_tokens": ...}
+	monitorChallengeMaxTokens = 512
 
 	// monitorRunOneBuffer runOne 的总超时缓冲（除请求超时与 ping 超时外的额外裕量）。
 	monitorRunOneBuffer = 10 * time.Second

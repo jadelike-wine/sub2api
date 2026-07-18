@@ -363,7 +363,7 @@ func TestRunCheckForModel_MergeMode_UserFieldsWinButDenyListProtects(t *testing.
 		BodyOverrideMode: MonitorBodyOverrideModeMerge,
 		BodyOverride: map[string]any{
 			"system":     "You are Claude Code...",
-			"max_tokens": float64(999),   // 应该覆盖默认 50
+			"max_tokens": float64(999),   // 应该覆盖默认 512
 			"model":      "hacked-model", // 应该被黑名单挡住，保留原 model
 			"messages":   []any{},        // 同上，被挡
 		},
@@ -449,5 +449,252 @@ func TestRunCheckForModel_ReplaceMode_EmptyResponseIsFailed(t *testing.T) {
 	}
 	if !strings.Contains(res.Message, "replace-mode") {
 		t.Errorf("failure message should hint replace-mode, got %q", res.Message)
+	}
+}
+
+// TestMonitorChallengeMaxTokens_DefaultIs512 验证默认 challenge 请求体的 max_tokens 已提升为 512。
+// 回归 Agnes agnes-2.0-flash 误报：默认 max_tokens=50 时 reasoning 会把预算耗光，
+// 导致 content 为空 + finish_reason=length，监控误记为 challenge mismatch。
+//
+// 覆盖全部 4 种 adapter：
+//   - OpenAI Chat Completions: max_tokens=512
+//   - Grok Chat Completions:   max_tokens=512
+//   - Anthropic Messages:      max_tokens=512
+//   - OpenAI Responses:        max_output_tokens=512（注意字段名不同）
+func TestMonitorChallengeMaxTokens_DefaultIs512(t *testing.T) {
+	if monitorChallengeMaxTokens != 512 {
+		t.Fatalf("monitorChallengeMaxTokens const should be 512, got %d", monitorChallengeMaxTokens)
+	}
+
+	cases := []struct {
+		name     string
+		provider string
+		model    string
+		opts     *CheckOptions
+		// bodyField 是请求体里 max token 字段名；不同 adapter 字段名不同。
+		// OpenAI Responses 用 max_output_tokens，其它三个用 max_tokens。
+		bodyField string
+	}{
+		{
+			name:      "openai chat_completions",
+			provider:  MonitorProviderOpenAI,
+			model:     "agnes-2.0-flash",
+			opts:      nil,
+			bodyField: "max_tokens",
+		},
+		{
+			name:      "grok chat_completions",
+			provider:  MonitorProviderGrok,
+			model:     MonitorDefaultGrokModel,
+			opts:      nil,
+			bodyField: "max_tokens",
+		},
+		{
+			name:      "anthropic messages",
+			provider:  MonitorProviderAnthropic,
+			model:     "claude-x",
+			opts:      nil,
+			bodyField: "max_tokens",
+		},
+		{
+			name: "openai responses",
+			provider: MonitorProviderOpenAI,
+			model:    "gpt-test",
+			opts: &CheckOptions{
+				APIMode: MonitorAPIModeResponses,
+			},
+			bodyField: "max_output_tokens",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 两种 capture handler 都把最近一次请求 body 存到 lastBody（map[string]any）。
+			// 用 any 持有指针，统一读取 lastBody。
+			var handler interface {
+				lastBodyMap() map[string]any
+			}
+			var endpoint string
+			switch tc.provider {
+			case MonitorProviderAnthropic:
+				ch := &captureHandler{respondText: "42"}
+				endpoint = setupFakeAnthropic(t, ch)
+				handler = &captureHandlerView{ch}
+			default:
+				h := &openAICaptureHandler{}
+				endpoint = setupFakeOpenAI(t, h)
+				handler = &openAICaptureHandlerView{h}
+			}
+			_ = runCheckForModel(context.Background(), tc.provider, endpoint, "sk-fake", tc.model, tc.opts)
+
+			body := handler.lastBodyMap()
+			if body == nil {
+				t.Fatalf("%s: captured request body is nil (handler never called?)", tc.name)
+			}
+			got, ok := body[tc.bodyField].(float64)
+			if !ok {
+				t.Fatalf("%s: expected %s to be number, got %T (%v)", tc.name, tc.bodyField, body[tc.bodyField], body[tc.bodyField])
+			}
+			if int(got) != 512 {
+				t.Fatalf("%s: expected %s=512, got %v", tc.name, tc.bodyField, got)
+			}
+		})
+	}
+}
+
+// captureHandlerView / openAICaptureHandlerView 是为了让上面表驱动测试
+// 用统一的 lastBodyMap() 接口读取两种 handler 的 lastBody 字段。
+type captureHandlerView struct{ h *captureHandler }
+
+func (v *captureHandlerView) lastBodyMap() map[string]any { return v.h.lastBody }
+
+type openAICaptureHandlerView struct{ h *openAICaptureHandler }
+
+func (v *openAICaptureHandlerView) lastBodyMap() map[string]any { return v.h.lastBody }
+
+// TestRunCheckForModel_MergeMode_CanOverrideMaxTokens 验证 merge 模式下管理员
+// 可覆盖默认 max token 预算。两种协议字段名不同都要覆盖：
+//   - Chat Completions 用 {"max_tokens": 512}
+//   - Responses      用 {"max_output_tokens": 512}
+//
+// 两字段都不在 bodyMergeKeyDenyList 中，因此都允许 merge 覆盖。
+func TestRunCheckForModel_MergeMode_CanOverrideMaxTokens(t *testing.T) {
+	cases := []struct {
+		name      string
+		apiMode   string
+		bodyField string
+	}{
+		{name: "chat_completions uses max_tokens", apiMode: MonitorAPIModeChatCompletions, bodyField: "max_tokens"},
+		{name: "responses uses max_output_tokens", apiMode: MonitorAPIModeResponses, bodyField: "max_output_tokens"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &openAICaptureHandler{}
+			endpoint := setupFakeOpenAI(t, h)
+
+			opts := &CheckOptions{
+				APIMode:          tc.apiMode,
+				BodyOverrideMode: MonitorBodyOverrideModeMerge,
+				BodyOverride:     map[string]any{tc.bodyField: float64(512)},
+			}
+			_ = runCheckForModel(context.Background(), MonitorProviderOpenAI, endpoint, "sk-fake", "agnes-2.0-flash", opts)
+
+			got, ok := h.lastBody[tc.bodyField].(float64)
+			if !ok {
+				t.Fatalf("expected %s to be number, got %T (%v)", tc.bodyField, h.lastBody[tc.bodyField], h.lastBody[tc.bodyField])
+			}
+			if int(got) != 512 {
+				t.Fatalf("merge mode should allow overriding %s to 512, got %v", tc.bodyField, got)
+			}
+		})
+	}
+}
+
+// TestRunCheckForModel_ReasoningTruncation_ReturnsExplicitMessage 验证 2xx + 空 content +
+// finish_reason=length + 非空 reasoning_content 时返回明确脱敏提示而非通用 challenge mismatch。
+// 复现 Agnes agnes-2.0-flash 在 max_tokens 过小时的监控误报场景。
+func TestRunCheckForModel_ReasoningTruncation_ReturnsExplicitMessage(t *testing.T) {
+	raw := `{
+		"choices": [{
+			"finish_reason": "length",
+			"message": {
+				"content": "",
+				"reasoning_content": "let me compute: 17 + 25 = 42, so the answer is 42."
+			}
+		}],
+		"usage": {
+			"completion_tokens": 50,
+			"completion_tokens_details": {"reasoning_tokens": 50}
+		}
+	}`
+	h := &openAICaptureHandler{rawResponse: raw}
+	endpoint := setupFakeOpenAI(t, h)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, endpoint, "sk-fake", "agnes-2.0-flash", nil)
+
+	if res.Status != MonitorStatusFailed {
+		t.Fatalf("reasoning-truncated response should still be failed, got status=%s", res.Status)
+	}
+	if !strings.Contains(res.Message, "response truncated") {
+		t.Fatalf("expected explicit truncation hint, got %q", res.Message)
+	}
+	if !strings.Contains(res.Message, "reasoning consumed max_tokens") {
+		t.Fatalf("expected hint to mention reasoning consumed max_tokens, got %q", res.Message)
+	}
+	if strings.Contains(res.Message, "challenge mismatch") {
+		t.Fatalf("should not fall back to generic challenge mismatch, got %q", res.Message)
+	}
+	// 提示必须脱敏，不能把 reasoning_content 原文带进 message
+	if strings.Contains(res.Message, "let me compute") {
+		t.Fatalf("message should not leak reasoning_content, got %q", res.Message)
+	}
+}
+
+// TestRunCheckForModel_NormalResponseWithAnswerIsOperational 验证带正确答案的正常响应仍为 operational，
+// 并回归默认 max_tokens=512（修复后 Agnes 在合理预算下能返回 content）。
+func TestRunCheckForModel_NormalResponseWithAnswerIsOperational(t *testing.T) {
+	// openAICaptureHandler 默认按 challenge 算式回正确答案到 choices.0.message.content
+	h := &openAICaptureHandler{}
+	endpoint := setupFakeOpenAI(t, h)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, endpoint, "sk-fake", "agnes-2.0-flash", nil)
+
+	if res.Status != MonitorStatusOperational {
+		t.Fatalf("normal response with correct answer should be operational, got status=%s message=%q", res.Status, res.Message)
+	}
+	mt, ok := h.lastBody["max_tokens"].(float64)
+	if !ok {
+		t.Fatalf("expected max_tokens to be number, got %T (%v)", h.lastBody["max_tokens"], h.lastBody["max_tokens"])
+	}
+	if int(mt) != 512 {
+		t.Errorf("expected default max_tokens=512, got %v", mt)
+	}
+}
+
+// TestChallengeMismatchMessage_FallbackToGeneric 验证非 reasoning-truncation 场景
+// 仍回退到通用 challenge mismatch 提示（含 expected / got）。
+func TestChallengeMismatchMessage_FallbackToGeneric(t *testing.T) {
+	cases := []struct {
+		name     string
+		rawBody  string
+		respText string
+		expected string
+		wantSub  string
+	}{
+		{
+			name:     "empty content but no reasoning_content",
+			rawBody:  `{"choices":[{"finish_reason":"length","message":{"content":""}}]}`,
+			respText: "",
+			expected: "42",
+			wantSub:  "challenge mismatch",
+		},
+		{
+			name:     "empty content but finish_reason=stop",
+			rawBody:  `{"choices":[{"finish_reason":"stop","message":{"content":"","reasoning_content":"..."}}]}`,
+			respText: "",
+			expected: "42",
+			wantSub:  "challenge mismatch",
+		},
+		{
+			name:     "wrong answer in content",
+			rawBody:  `{"choices":[{"finish_reason":"stop","message":{"content":"99"}}]}`,
+			respText: "99",
+			expected: "42",
+			wantSub:  "challenge mismatch",
+		},
+		{
+			name:     "non-openai shape (anthropic-style)",
+			rawBody:  `{"content":[{"type":"text","text":""}]}`,
+			respText: "",
+			expected: "42",
+			wantSub:  "challenge mismatch",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := challengeMismatchMessage(tc.rawBody, tc.respText, tc.expected)
+			if !strings.Contains(got, tc.wantSub) {
+				t.Fatalf("expected message to contain %q, got %q", tc.wantSub, got)
+			}
+		})
 	}
 }
