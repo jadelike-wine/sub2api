@@ -24,10 +24,10 @@ describe('Stripe lazy-loading contract', () => {
   it('keeps Stripe out of the shared vendor chunk', () => {
     const viteConfig = readFrontendFile('vite.config.ts')
     const stripeRule = viteConfig.indexOf("id.includes('/@stripe/stripe-js/')")
-    const miscFallback = viteConfig.indexOf("return 'vendor-misc'")
 
     expect(stripeRule).toBeGreaterThan(-1)
-    expect(viteConfig.slice(stripeRule, miscFallback)).toContain("return 'vendor-stripe'")
-    expect(stripeRule).toBeLessThan(miscFallback)
+    // Stripe 规则必须显式返回独立 chunk 'vendor-stripe'，
+    // 避免落入 Rollup 自动生成的共享 vendor chunk
+    expect(viteConfig.slice(stripeRule, stripeRule + 200)).toContain("return 'vendor-stripe'")
   })
 })

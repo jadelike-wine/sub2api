@@ -71,51 +71,33 @@ export default defineConfig(({ mode }) => {
       output: {
         /**
          * 手动分包配置
-         * 分离第三方库并按功能合并应用代码，避免循环依赖
+         *
+         * 仅对真正独立、体积较大的库单独分包；Vue 生态（vue / vue-router /
+         * pinia / @vue/* / vue-i18n / @intlify / @vueuse / element-plus 等）
+         * 与 lodash 等工具库之间存在 Rollup 模块去重产生的交叉引用，强制拆分
+         * 会导致循环依赖并触发 "Cannot access 'X' before initialization"
+         * 的 TDZ 错误（生产环境白屏）。因此这些包交给 Rollup 自动分包。
          */
         manualChunks(id: string) {
           if (id.includes('node_modules')) {
-            // Vue 核心库
-            if (
-              id.includes('/vue/') ||
-              id.includes('/vue-router/') ||
-              id.includes('/pinia/') ||
-              id.includes('/@vue/')
-            ) {
-              return 'vendor-vue'
-            }
-
-            // UI 工具库（较大，单独分离）
-            if (id.includes('/@vueuse/') || id.includes('/xlsx/')) {
-              return 'vendor-ui'
-            }
-
-            // Element Plus 全家桶单独分包
-            if (id.includes('/element-plus/') || id.includes('/@element-plus/')) {
-              return 'vendor-element-plus'
-            }
-
-            // 图表库
+            // 图表库：仅仪表盘使用，独立且体积较大
             if (id.includes('/chart.js/') || id.includes('/vue-chartjs/')) {
               return 'vendor-chart'
             }
 
-            // 国际化
-            if (id.includes('/vue-i18n/') || id.includes('/@intlify/')) {
-              return 'vendor-i18n'
-            }
-
-            // Stripe 仅在支付流程中按需加载，避免进入首页公共依赖。
+            // Stripe：仅在支付流程中按需加载，避免进入首页公共依赖
             if (id.includes('/@stripe/stripe-js/')) {
               return 'vendor-stripe'
             }
 
-            // 其他小型第三方库合并
-            return 'vendor-misc'
-          }
+            // xlsx：体积较大且仅在导出场景按需使用
+            if (id.includes('/xlsx/')) {
+              return 'vendor-xlsx'
+            }
 
-          // 应用代码：按入口点自动分包，不手动干预
-          // 这样可以避免循环依赖，同时保持合理的 chunk 数量
+            // 其余第三方库（含 Vue 生态、lodash、element-plus 等）
+            // 交给 Rollup 自动分包，避免人工边界引发循环依赖
+          }
         }
       }
     }
