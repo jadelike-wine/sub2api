@@ -1,8 +1,8 @@
 name: Security Scan
 
+# 纯定时安全扫描。push/PR 的安全扫描已并入 backend-ci.yml，
+# 避免同一 commit 触发两个 workflow。
 on:
-  push:
-  pull_request:
   schedule:
     - cron: '0 3 * * 1'
 
