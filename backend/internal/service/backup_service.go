@@ -429,6 +429,11 @@ func (s *BackupService) UpdateS3Config(ctx context.Context, cfg BackupS3Config) 
 func (s *BackupService) loadS3ConfigRaw(ctx context.Context) (*BackupS3Config, error) {
 	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupS3Config)
 	if err != nil {
+		// setting 行不存在 = 尚未配置（合法状态）；其它错误（如 DB 故障）必须传播，
+		// 否则 UpdateS3Config 留空 Secret 编辑时会静默覆盖既有凭证。
+		if errors.Is(err, ErrSettingNotFound) {
+			return nil, nil //nolint:nilnil // 尚未配置是合法状态
+		}
 		return nil, fmt.Errorf("read backup s3 config: %w", err)
 	}
 	if raw == "" {
@@ -1333,6 +1338,10 @@ func (s *BackupService) GetBackupDownloadURL(ctx context.Context, backupID strin
 func (s *BackupService) loadS3Config(ctx context.Context) (*BackupS3Config, error) {
 	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupS3Config)
 	if err != nil {
+		// setting 行不存在 = 尚未配置（合法状态）；其它错误（如 DB 故障）必须传播。
+		if errors.Is(err, ErrSettingNotFound) {
+			return nil, nil //nolint:nilnil // no config is a valid state
+		}
 		return nil, fmt.Errorf("read backup s3 config: %w", err)
 	}
 	if raw == "" {

@@ -50,7 +50,9 @@ func (m *mockSettingRepo) GetValue(_ context.Context, key string) (string, error
 	}
 	v, ok := m.data[key]
 	if !ok {
-		return "", nil
+		// 与真实 settingRepository.GetValue 对齐：行不存在时返回 ErrSettingNotFound，
+		// 而非 ("", nil)，避免掩盖 loadS3Config 的 "尚未配置" 分支回归。
+		return "", ErrSettingNotFound
 	}
 	return v, nil
 }
@@ -647,6 +649,20 @@ func TestBackupService_GetS3Config_RedactsSecret(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "", cfg.SecretAccessKey, "GetS3Config 必须脱敏 SecretAccessKey")
 	require.Equal(t, "https://cdn.example.com", cfg.PublicBaseURL)
+}
+
+// TestBackupService_GetS3Config_NotConfigured 验证 settings 表无 backup_s3_config 行时
+// （即 settingRepo.GetValue 返回 ErrSettingNotFound），GetS3Config 返回空对象而非 404。
+// 这是生产环境 "SETTING_NOT_FOUND" 报错的回归测试。
+func TestBackupService_GetS3Config_NotConfigured(t *testing.T) {
+	repo := newMockSettingRepo() // 空 repo，无任何配置
+	svc := newTestBackupService(repo, &mockDumper{}, newMockObjectStore())
+
+	cfg, err := svc.GetS3Config(context.Background())
+	require.NoError(t, err, "尚未配置是合法状态，不得返回 ErrSettingNotFound")
+	require.NotNil(t, cfg, "未配置时应返回空对象而非 nil")
+	require.Equal(t, "", cfg.Bucket)
+	require.Equal(t, "", cfg.SecretAccessKey)
 }
 
 func TestBackupService_Schedule_CronValidation(t *testing.T) {
