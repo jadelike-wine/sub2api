@@ -8,15 +8,15 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
-// ProvideImageStorage 是对象存储工厂，根据 config.ImageGeneration.StorageDriver 选择实现。
+// ProvideEnovaImageAssetStorage 是对象存储工厂，根据 config.ImageGeneration.StorageDriver 选择实现。
 //
 // 选择逻辑：
-//  1. storage_driver=local → LocalImageStorage（不要求任何 S3 配置）
-//  2. storage_driver=s3 → S3ImageStorage（原有逻辑）
+//  1. storage_driver=local → LocalEnovaImageAssetStorage（不要求任何 S3 配置）
+//  2. storage_driver=s3 → S3EnovaImageAssetStorage（原有逻辑）
 //  3. storage_driver 留空 → 自动推断：有 S3Bucket 则用 s3，否则用 local
 //
-// 返回 service.ImageObjectStorage 接口，无需 wire.Bind。
-func ProvideImageStorage(cfg *config.Config) (service.ImageObjectStorage, error) {
+// 返回 service.EnovaImageAssetStorage 接口，无需 wire.Bind。
+func ProvideEnovaImageAssetStorage(cfg *config.Config) (service.EnovaImageAssetStorage, error) {
 	ig := cfg.ImageGeneration
 	driver := ig.StorageDriver
 
@@ -27,12 +27,12 @@ func ProvideImageStorage(cfg *config.Config) (service.ImageObjectStorage, error)
 		} else {
 			driver = "local"
 		}
-		log.Printf("[ImageStorage] storage_driver not set, auto-detected: %s", driver)
+		log.Printf("[EnovaImageAssetStorage] storage_driver not set, auto-detected: %s", driver)
 	}
 
 	switch driver {
 	case "local":
-		localCfg := service.LocalStorageConfig{
+		localCfg := service.EnovaLocalImageAssetStorageConfig{
 			RootPath:                   ig.LocalStoragePath,
 			URLPrefix:                  ig.LocalURLPrefix,
 			URLSigningSecret:           ig.LocalURLSigningSecret,
@@ -40,21 +40,21 @@ func ProvideImageStorage(cfg *config.Config) (service.ImageObjectStorage, error)
 			MinFreeSpaceMB:             ig.LocalMinFreeSpaceMB,
 			MaxFileSizeMB:              ig.LocalMaxFileSizeMB,
 		}
-		storage, err := NewLocalImageStorage(localCfg)
+		storage, err := NewLocalEnovaImageAssetStorage(localCfg)
 		if err != nil {
-			log.Printf("[ImageStorage] WARNING: local storage init failed: %v (storage will be unavailable)", err)
+			log.Printf("[EnovaImageAssetStorage] WARNING: local storage init failed: %v (storage will be unavailable)", err)
 			// 返回未配置实例，不阻塞启动
-			return &LocalImageStorage{configured: false}, nil
+			return &LocalEnovaImageAssetStorage{configured: false}, nil
 		}
 		if !storage.Configured() {
-			log.Printf("[ImageStorage] local storage not configured (root_path or signing_secret missing)")
+			log.Printf("[EnovaImageAssetStorage] local storage not configured (root_path or signing_secret missing)")
 		} else {
-			log.Printf("[ImageStorage] local storage initialized at %s", ig.LocalStoragePath)
+			log.Printf("[EnovaImageAssetStorage] local storage initialized at %s", ig.LocalStoragePath)
 		}
 		return storage, nil
 
 	case "s3":
-		s3Cfg := service.ImageStorageConfig{
+		s3Cfg := service.EnovaImageAssetStorageConfig{
 			Region:                     ig.S3Region,
 			Bucket:                     ig.S3Bucket,
 			Prefix:                     ig.S3Prefix,
@@ -65,12 +65,12 @@ func ProvideImageStorage(cfg *config.Config) (service.ImageObjectStorage, error)
 			PublicBaseURL:              ig.S3PublicBaseURL,
 			PresignedURLExpiresSeconds: ig.PresignedURLExpires,
 		}
-		storage, err := NewS3ImageStorage(s3Cfg)
+		storage, err := NewS3EnovaImageAssetStorage(s3Cfg)
 		if err != nil {
 			return nil, fmt.Errorf("init s3 storage: %w", err)
 		}
 		if !storage.Configured() {
-			log.Printf("[ImageStorage] S3 storage not configured (bucket empty)")
+			log.Printf("[EnovaImageAssetStorage] S3 storage not configured (bucket empty)")
 		}
 		return storage, nil
 

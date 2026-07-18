@@ -40,7 +40,7 @@ type ImageGenerationService struct {
 	assetRepo        ImageAssetRepository
 	credentialRepo   ImageCredentialRepository
 	scheduler        CredentialScheduler
-	storage          ImageObjectStorage
+	storage          EnovaImageAssetStorage
 	encryptor        SecretEncryptor
 	usageRepo        UsageLogRepository
 	userRepo         UserRepository
@@ -55,7 +55,7 @@ func NewImageGenerationService(
 	assetRepo ImageAssetRepository,
 	credentialRepo ImageCredentialRepository,
 	scheduler CredentialScheduler,
-	storage ImageObjectStorage,
+	storage EnovaImageAssetStorage,
 	encryptor SecretEncryptor,
 	usageRepo UsageLogRepository,
 	userRepo UserRepository,

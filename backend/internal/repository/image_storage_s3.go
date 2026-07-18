@@ -23,13 +23,13 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
-// S3ImageStorage 实现 service.ImageObjectStorage，基于 AWS S3 兼容存储。
+// S3EnovaImageAssetStorage 实现 service.EnovaImageAssetStorage，基于 AWS S3 兼容存储。
 //
 // AWS 凭据优先级：
 //  1. 显式 AccessKeyID + SecretAccessKey（来自管理后台 settings 或 config.yaml）
 //  2. EC2 IAM Role / ECS Task Role（当两者为空时，awsconfig.LoadDefaultConfig 自动走链）
 //  3. 环境变量
-type S3ImageStorage struct {
+type S3EnovaImageAssetStorage struct {
 	client        *s3.Client
 	presigner     *s3.PresignClient
 	bucket        string
@@ -39,10 +39,10 @@ type S3ImageStorage struct {
 	configured    bool
 }
 
-// NewS3ImageStorage 根据配置构造 S3 存储。cfg.Bucket 为空时返回未配置实例（Configured()=false）。
-func NewS3ImageStorage(cfg service.ImageStorageConfig) (*S3ImageStorage, error) {
+// NewS3EnovaImageAssetStorage 根据配置构造 S3 存储。cfg.Bucket 为空时返回未配置实例（Configured()=false）。
+func NewS3EnovaImageAssetStorage(cfg service.EnovaImageAssetStorageConfig) (*S3EnovaImageAssetStorage, error) {
 	if cfg.Bucket == "" {
-		return &S3ImageStorage{configured: false}, nil
+		return &S3EnovaImageAssetStorage{configured: false}, nil
 	}
 
 	region := cfg.Region
@@ -81,7 +81,7 @@ func NewS3ImageStorage(cfg service.ImageStorageConfig) (*S3ImageStorage, error) 
 		exp = 30 * time.Minute
 	}
 
-	return &S3ImageStorage{
+	return &S3EnovaImageAssetStorage{
 		client:        client,
 		presigner:     s3.NewPresignClient(client),
 		bucket:        cfg.Bucket,
@@ -92,18 +92,18 @@ func NewS3ImageStorage(cfg service.ImageStorageConfig) (*S3ImageStorage, error) 
 	}, nil
 }
 
-func (s *S3ImageStorage) Bucket() string   { return s.bucket }
-func (s *S3ImageStorage) Configured() bool { return s.configured }
-func (s *S3ImageStorage) Driver() string   { return "s3" }
+func (s *S3EnovaImageAssetStorage) Bucket() string   { return s.bucket }
+func (s *S3EnovaImageAssetStorage) Configured() bool { return s.configured }
+func (s *S3EnovaImageAssetStorage) Driver() string   { return "s3" }
 
-func (s *S3ImageStorage) fullKey(key string) string {
+func (s *S3EnovaImageAssetStorage) fullKey(key string) string {
 	if s.prefix == "" {
 		return key
 	}
 	return s.prefix + "/" + strings.TrimPrefix(key, "/")
 }
 
-func (s *S3ImageStorage) Put(ctx context.Context, input service.PutObjectInput) (*service.StoredObject, error) {
+func (s *S3EnovaImageAssetStorage) Put(ctx context.Context, input service.PutObjectInput) (*service.StoredObject, error) {
 	if !s.configured {
 		return nil, errors.New("image storage is not configured")
 	}
@@ -145,7 +145,7 @@ func (s *S3ImageStorage) Put(ctx context.Context, input service.PutObjectInput) 
 	}, nil
 }
 
-func (s *S3ImageStorage) Delete(ctx context.Context, key string) error {
+func (s *S3EnovaImageAssetStorage) Delete(ctx context.Context, key string) error {
 	if !s.configured {
 		return errors.New("image storage is not configured")
 	}
@@ -159,7 +159,7 @@ func (s *S3ImageStorage) Delete(ctx context.Context, key string) error {
 	return err
 }
 
-func (s *S3ImageStorage) PresignGet(ctx context.Context, key string, expires time.Duration) (string, error) {
+func (s *S3EnovaImageAssetStorage) PresignGet(ctx context.Context, key string, expires time.Duration) (string, error) {
 	if !s.configured {
 		return "", errors.New("image storage is not configured")
 	}
@@ -181,7 +181,7 @@ func (s *S3ImageStorage) PresignGet(ctx context.Context, key string, expires tim
 	return res.URL, nil
 }
 
-func (s *S3ImageStorage) PresignPut(ctx context.Context, key string, contentType string, expires time.Duration) (string, error) {
+func (s *S3EnovaImageAssetStorage) PresignPut(ctx context.Context, key string, contentType string, expires time.Duration) (string, error) {
 	if !s.configured {
 		return "", errors.New("image storage is not configured")
 	}
@@ -203,7 +203,7 @@ func (s *S3ImageStorage) PresignPut(ctx context.Context, key string, contentType
 	return res.URL, nil
 }
 
-func (s *S3ImageStorage) Head(ctx context.Context, key string) (*service.ObjectHead, error) {
+func (s *S3EnovaImageAssetStorage) Head(ctx context.Context, key string) (*service.ObjectHead, error) {
 	if !s.configured {
 		return nil, errors.New("image storage is not configured")
 	}
@@ -236,7 +236,7 @@ func (s *S3ImageStorage) Head(ctx context.Context, key string) (*service.ObjectH
 
 // Get 读取 S3 对象的原始内容（用于图生图场景将输入图片 base64 编码后发给上游）。
 // 调用方负责关闭返回的 ReadCloser。
-func (s *S3ImageStorage) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+func (s *S3EnovaImageAssetStorage) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	if !s.configured {
 		return nil, errors.New("image storage is not configured")
 	}
@@ -333,7 +333,7 @@ func isPublicIP(ip net.IP) bool {
 func DownloadImageToStorage(
 	ctx context.Context,
 	rawURL string,
-	storage service.ImageObjectStorage,
+	storage service.EnovaImageAssetStorage,
 	destKey string,
 	maxBytes int64,
 	dialTimeout, headerTimeout, totalTimeout time.Duration,

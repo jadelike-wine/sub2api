@@ -194,8 +194,10 @@ func (r *fakeConvRepo) List(ctx context.Context, filter ImageConversationFilter)
 func (r *fakeConvRepo) Update(ctx context.Context, userID, id int64, params UpdateImageConversationParams) (*ImageConversation, error) {
 	return r.created, nil
 }
-func (r *fakeConvRepo) TouchLastMessageAt(ctx context.Context, userID, id int64, at time.Time) error { return nil }
-func (r *fakeConvRepo) SoftDelete(ctx context.Context, userID, id int64) error                       { return nil }
+func (r *fakeConvRepo) TouchLastMessageAt(ctx context.Context, userID, id int64, at time.Time) error {
+	return nil
+}
+func (r *fakeConvRepo) SoftDelete(ctx context.Context, userID, id int64) error { return nil }
 
 // fakeAssetRepo 模拟资产 repository。
 type fakeAssetRepo struct{}
@@ -304,7 +306,7 @@ func (s *fakeScheduler) GenerateWithCredential(ctx context.Context, credentialID
 	return s.genResult, s.genErr
 }
 
-// fakeStorage 模拟 ImageObjectStorage。
+// fakeStorage 模拟 EnovaImageAssetStorage。
 type fakeStorage struct{ configured bool }
 
 func (s *fakeStorage) Put(ctx context.Context, input PutObjectInput) (*StoredObject, error) {
@@ -361,14 +363,14 @@ func newTestImageGenService(t *testing.T, cfg config.ImageGenerationConfig) (
 
 func defaultTestImageGenConfig() config.ImageGenerationConfig {
 	return config.ImageGenerationConfig{
-		Enabled:                      true,
-		AgnesModel:                   "test-model",
-		MaxConcurrentPerUser:         3,
-		MaxAttemptsPerGeneration:     2,
-		MaxInputImagesPerGen:         6,
-		MaxPromptChars:               1000,
-		Price2KUSD:                   0.1,
-		StaleProcessingAfterSeconds:  1,
+		Enabled:                     true,
+		AgnesModel:                  "test-model",
+		MaxConcurrentPerUser:        3,
+		MaxAttemptsPerGeneration:    2,
+		MaxInputImagesPerGen:        6,
+		MaxPromptChars:              1000,
+		Price2KUSD:                  0.1,
+		StaleProcessingAfterSeconds: 1,
 	}
 }
 

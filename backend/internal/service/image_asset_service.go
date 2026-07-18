@@ -17,15 +17,15 @@ import (
 //  5. 创建 ImageAsset 记录
 type ImageAssetService struct {
 	assetRepo ImageAssetRepository
-	storage   ImageObjectStorage
-	cfg       ImageStorageConfig
+	storage   EnovaImageAssetStorage
+	cfg       EnovaImageAssetStorageConfig
 	maxBytes  int64
 }
 
 // NewImageAssetService 构造资产服务。
 func NewImageAssetService(
 	assetRepo ImageAssetRepository,
-	storage ImageObjectStorage,
+	storage EnovaImageAssetStorage,
 	maxInputBytes int64,
 ) *ImageAssetService {
 	return &ImageAssetService{
@@ -42,9 +42,9 @@ type PresignUploadRequest struct {
 
 // PresignUploadResponse 预签名上传响应。
 type PresignUploadResponse struct {
-	UploadURL  string // 短期 Presigned PUT URL
-	S3Key      string // 前端上传后需回传此 key
-	ExpiresIn  int    // URL 有效期（秒）
+	UploadURL string // 短期 Presigned PUT URL
+	S3Key     string // 前端上传后需回传此 key
+	ExpiresIn int    // URL 有效期（秒）
 }
 
 // PresignUpload 生成用户直传 S3 的预签名 PUT URL。

@@ -20,7 +20,7 @@ import (
 //   - 路由注册时由 adminAuth 中间件强制管理员鉴权
 type ImageGenerationHandler struct {
 	credentialService *service.ImageCredentialService
-	storage           service.ImageObjectStorage
+	storage           service.EnovaImageAssetStorage
 	cleanupService    *service.ImageAssetCleanupService
 	settingService    *service.SettingService
 	cfg               *config.Config
@@ -29,7 +29,7 @@ type ImageGenerationHandler struct {
 // NewImageGenerationHandler 构造管理员侧 handler。
 func NewImageGenerationHandler(
 	credentialService *service.ImageCredentialService,
-	storage service.ImageObjectStorage,
+	storage service.EnovaImageAssetStorage,
 	cleanupService *service.ImageAssetCleanupService,
 	settingService *service.SettingService,
 	cfg *config.Config,

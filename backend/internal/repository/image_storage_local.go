@@ -27,7 +27,7 @@ var localMediaMimeTypes = map[string]string{
 	".gif":  "image/gif",
 }
 
-// LocalImageStorage 实现 service.ImageObjectStorage，基于本地磁盘。
+// LocalEnovaImageAssetStorage 实现 service.EnovaImageAssetStorage，基于本地磁盘。
 //
 // 安全约束：
 //   - 文件名由服务端生成（UUID），不使用用户上传的原始文件名
@@ -35,7 +35,7 @@ var localMediaMimeTypes = map[string]string{
 //   - 访问 URL 使用 HMAC-SHA256 签名 + 过期时间，不公开目录
 //   - 写入采用临时文件 + 原子 rename，避免半写文件
 //   - 路径穿越校验：禁止 ../、绝对路径、符号链接逃逸
-type LocalImageStorage struct {
+type LocalEnovaImageAssetStorage struct {
 	rootPath     string
 	urlPrefix    string
 	signingKey   []byte
@@ -45,12 +45,12 @@ type LocalImageStorage struct {
 	configured   bool
 }
 
-// NewLocalImageStorage 根据配置构造本地存储实例。
+// NewLocalEnovaImageAssetStorage 根据配置构造本地存储实例。
 // 启动时会创建根目录并测试写权限；配置无效时返回 configured=false 的实例（不阻塞启动）。
-func NewLocalImageStorage(cfg service.LocalStorageConfig) (*LocalImageStorage, error) {
+func NewLocalEnovaImageAssetStorage(cfg service.EnovaLocalImageAssetStorageConfig) (*LocalEnovaImageAssetStorage, error) {
 	rootPath := filepath.Clean(cfg.RootPath)
 	if rootPath == "" || rootPath == "." {
-		return &LocalImageStorage{configured: false}, nil
+		return &LocalEnovaImageAssetStorage{configured: false}, nil
 	}
 
 	if cfg.URLSigningSecret == "" {
@@ -86,7 +86,7 @@ func NewLocalImageStorage(cfg service.LocalStorageConfig) (*LocalImageStorage, e
 		return nil, fmt.Errorf("local storage root not writable: %w", err)
 	}
 
-	return &LocalImageStorage{
+	return &LocalEnovaImageAssetStorage{
 		rootPath:     rootPath,
 		urlPrefix:    urlPrefix,
 		signingKey:   []byte(cfg.URLSigningSecret),
@@ -97,9 +97,9 @@ func NewLocalImageStorage(cfg service.LocalStorageConfig) (*LocalImageStorage, e
 	}, nil
 }
 
-func (l *LocalImageStorage) Bucket() string   { return "local" }
-func (l *LocalImageStorage) Configured() bool { return l.configured }
-func (l *LocalImageStorage) Driver() string   { return "local" }
+func (l *LocalEnovaImageAssetStorage) Bucket() string   { return "local" }
+func (l *LocalEnovaImageAssetStorage) Configured() bool { return l.configured }
+func (l *LocalEnovaImageAssetStorage) Driver() string   { return "local" }
 
 // ---- 路径安全 ----
 
@@ -111,7 +111,7 @@ func (l *LocalImageStorage) Driver() string   { return "local" }
 //   - 拒绝绝对路径（以 / 开头的 key）
 //   - 清理后再做 filepath.Rel 校验作为兜底
 //   - 不跟随指向根目录外部的符号链接
-func (l *LocalImageStorage) safeJoinPath(key string) (string, error) {
+func (l *LocalEnovaImageAssetStorage) safeJoinPath(key string) (string, error) {
 	// 拒绝包含 .. 路径段的 key
 	if containsDotDotSegment(key) {
 		return "", fmt.Errorf("path traversal detected: key contains '..' segment")
@@ -172,7 +172,7 @@ func containsDotDotSegment(path string) bool {
 // ---- 磁盘空间检查 ----
 
 // checkFreeSpace 检查目标路径所在文件系统的剩余空间是否足够。
-func (l *LocalImageStorage) checkFreeSpace(path string) error {
+func (l *LocalEnovaImageAssetStorage) checkFreeSpace(path string) error {
 	var stat syscall.Statfs_t
 	// 向上找到存在的目录
 	dir := path
@@ -198,7 +198,7 @@ func (l *LocalImageStorage) checkFreeSpace(path string) error {
 
 // ---- 接口实现 ----
 
-func (l *LocalImageStorage) Put(ctx context.Context, input service.PutObjectInput) (*service.StoredObject, error) {
+func (l *LocalEnovaImageAssetStorage) Put(ctx context.Context, input service.PutObjectInput) (*service.StoredObject, error) {
 	if !l.configured {
 		return nil, errors.New("local image storage is not configured")
 	}
@@ -265,7 +265,7 @@ func (l *LocalImageStorage) Put(ctx context.Context, input service.PutObjectInpu
 	}, nil
 }
 
-func (l *LocalImageStorage) Delete(ctx context.Context, key string) error {
+func (l *LocalEnovaImageAssetStorage) Delete(ctx context.Context, key string) error {
 	if !l.configured {
 		return errors.New("local image storage is not configured")
 	}
@@ -283,7 +283,7 @@ func (l *LocalImageStorage) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-func (l *LocalImageStorage) Head(ctx context.Context, key string) (*service.ObjectHead, error) {
+func (l *LocalEnovaImageAssetStorage) Head(ctx context.Context, key string) (*service.ObjectHead, error) {
 	if !l.configured {
 		return nil, errors.New("local image storage is not configured")
 	}
@@ -310,7 +310,7 @@ func (l *LocalImageStorage) Head(ctx context.Context, key string) (*service.Obje
 
 // Get 读取本地存储对象的原始内容（用于图生图场景将输入图片 base64 编码后发给上游）。
 // 调用方负责关闭返回的 ReadCloser。
-func (l *LocalImageStorage) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+func (l *LocalEnovaImageAssetStorage) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	if !l.configured {
 		return nil, errors.New("local image storage is not configured")
 	}
@@ -331,7 +331,7 @@ func (l *LocalImageStorage) Get(ctx context.Context, key string) (io.ReadCloser,
 // ---- 签名 URL ----
 
 // signURL 对 method + key + expires 生成 HMAC-SHA256 签名。
-func (l *LocalImageStorage) signURL(method, key string, expires int64) string {
+func (l *LocalEnovaImageAssetStorage) signURL(method, key string, expires int64) string {
 	payload := fmt.Sprintf("%s\n%s\n%d", method, key, expires)
 	mac := hmac.New(sha256.New, l.signingKey)
 	mac.Write([]byte(payload))
@@ -339,13 +339,13 @@ func (l *LocalImageStorage) signURL(method, key string, expires int64) string {
 }
 
 // verifySignature 使用常量时间比较验证签名。
-func (l *LocalImageStorage) verifySignature(method, key string, expires int64, signature string) bool {
+func (l *LocalEnovaImageAssetStorage) verifySignature(method, key string, expires int64, signature string) bool {
 	expected := l.signURL(method, key, expires)
 	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
 // VerifySignature 暴露给 handler 使用，验证 URL 签名。
-func (l *LocalImageStorage) VerifySignature(method, key string, expires int64, signature string) bool {
+func (l *LocalEnovaImageAssetStorage) VerifySignature(method, key string, expires int64, signature string) bool {
 	return l.verifySignature(method, key, expires, signature)
 }
 
@@ -357,7 +357,7 @@ func (l *LocalImageStorage) VerifySignature(method, key string, expires int64, s
 //
 // 过期时间 = 当前桶结束 + 1 个 bucket 缓冲，这样桶边界切换时
 // 旧 URL 仍有 1 个 bucket 的有效期，不会立即失效。
-func (l *LocalImageStorage) PresignGet(ctx context.Context, key string, expires time.Duration) (string, error) {
+func (l *LocalEnovaImageAssetStorage) PresignGet(ctx context.Context, key string, expires time.Duration) (string, error) {
 	if !l.configured {
 		return "", errors.New("local image storage is not configured")
 	}
@@ -377,7 +377,7 @@ func (l *LocalImageStorage) PresignGet(ctx context.Context, key string, expires 
 
 // PresignPut 生成带签名、带过期时间的上传 URL。
 // 客户端通过 PUT 方法将文件二进制作为请求体发送到该 URL。
-func (l *LocalImageStorage) PresignPut(ctx context.Context, key string, contentType string, expires time.Duration) (string, error) {
+func (l *LocalEnovaImageAssetStorage) PresignPut(ctx context.Context, key string, contentType string, expires time.Duration) (string, error) {
 	if !l.configured {
 		return "", errors.New("local image storage is not configured")
 	}
@@ -397,7 +397,7 @@ func (l *LocalImageStorage) PresignPut(ctx context.Context, key string, contentT
 
 // ServeFile 流式返回文件内容，支持 Range 请求和 HEAD。
 // 调用方负责从 URL query 解析 expires/signature 并验证签名。
-func (l *LocalImageStorage) ServeFile(w http.ResponseWriter, r *http.Request, key string) {
+func (l *LocalEnovaImageAssetStorage) ServeFile(w http.ResponseWriter, r *http.Request, key string) {
 	absPath, err := l.safeJoinPath(key)
 	if err != nil {
 		http.Error(w, "Not Found", http.StatusNotFound)
@@ -438,7 +438,7 @@ func (l *LocalImageStorage) ServeFile(w http.ResponseWriter, r *http.Request, ke
 
 // ReceiveUpload 从请求体流式读取文件并写入存储（供 PUT 上传使用）。
 // 返回写入的对象大小和 content-type。
-func (l *LocalImageStorage) ReceiveUpload(r *http.Request, key string, contentType string) (int64, error) {
+func (l *LocalEnovaImageAssetStorage) ReceiveUpload(r *http.Request, key string, contentType string) (int64, error) {
 	if !l.configured {
 		return 0, errors.New("local image storage is not configured")
 	}
@@ -499,7 +499,7 @@ func (l *LocalImageStorage) ReceiveUpload(r *http.Request, key string, contentTy
 }
 
 // safeJoinKeyForUpload 与 safeJoinPath 相同，但额外校验 key 不能指向已存在的目录。
-func (l *LocalImageStorage) safeJoinKeyForUpload(key string) (string, error) {
+func (l *LocalEnovaImageAssetStorage) safeJoinKeyForUpload(key string) (string, error) {
 	return l.safeJoinPath(key)
 }
 

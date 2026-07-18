@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-// ImageObjectStorage 是图片生成专用的对象存储抽象。
+// EnovaImageAssetStorage 是图片生成专用的对象存储抽象。
 // 当前实现：AWS S3（含兼容存储 R2/OSS/MinIO）和本地磁盘存储。
 //
 // 安全约束：
 //   - Bucket/目录默认私有，前端通过 PresignGet 获取短期访问 URL
 //   - 数据库只保存对象 Key，不保存短时 Presigned URL
 //   - Key 必须位于当前用户目录（media/images/{user_id}/...）
-type ImageObjectStorage interface {
+type EnovaImageAssetStorage interface {
 	// Put 上传一个对象，返回存储结果（含实际大小）。
 	Put(ctx context.Context, input PutObjectInput) (*StoredObject, error)
 	// Delete 删除一个对象。删除失败不能导致数据库不可恢复，调用方需记录待清理状态。
@@ -46,11 +46,11 @@ type PutObjectInput struct {
 
 // StoredObject 是上传结果。
 type StoredObject struct {
-	Bucket    string
-	Key       string
-	Size      int64
-	ETag      string
-	MimeType  string
+	Bucket   string
+	Key      string
+	Size     int64
+	ETag     string
+	MimeType string
 }
 
 // ObjectHead 是对象元数据查询结果。
@@ -62,8 +62,8 @@ type ObjectHead struct {
 	Exists      bool
 }
 
-// ImageStorageConfig 是 S3 对象存储配置（可来自 config.yaml 环境变量或管理后台 settings 表覆盖）。
-type ImageStorageConfig struct {
+// EnovaImageAssetStorageConfig 是 S3 对象存储配置（可来自 config.yaml 环境变量或管理后台 settings 表覆盖）。
+type EnovaImageAssetStorageConfig struct {
 	Region          string
 	Bucket          string
 	Prefix          string
@@ -76,8 +76,8 @@ type ImageStorageConfig struct {
 	PresignedURLExpiresSeconds int
 }
 
-// LocalStorageConfig 是本地磁盘存储配置。
-type LocalStorageConfig struct {
+// EnovaLocalImageAssetStorageConfig 是本地磁盘存储配置。
+type EnovaLocalImageAssetStorageConfig struct {
 	// RootPath 存储根目录（如 /app/data/media）
 	RootPath string
 	// URLPrefix 访问 URL 前缀（如 /api/media）

@@ -103,10 +103,10 @@ var ProviderSet = wire.NewSet(
 	NewImageGenerationRepository,
 	NewImageAssetRepository,
 	NewImageCredentialRepository,
-	ProvideS3ImageStorage,
-	// ProvideImageStorage 是存储工厂，根据 storage_driver 选择 local 或 s3 实现。
-	// 返回 service.ImageObjectStorage 接口，替代之前的 wire.Bind 方式。
-	ProvideImageStorage,
+	ProvideS3EnovaImageAssetStorage,
+	// ProvideEnovaImageAssetStorage 是存储工厂，根据 storage_driver 选择 local 或 s3 实现。
+	// 返回 service.EnovaImageAssetStorage 接口，替代之前的 wire.Bind 方式。
+	ProvideEnovaImageAssetStorage,
 
 	// Cache implementations
 	NewGatewayCache,
@@ -215,7 +215,7 @@ func ProvideRedis(cfg *config.Config) *redis.Client {
 	return InitRedis(cfg)
 }
 
-// ProvideS3ImageStorage 从 config.Config 构造 S3 图片存储。
+// ProvideS3EnovaImageAssetStorage 从 config.Config 构造 S3 图片存储。
 //
 // AWS 凭据优先级：
 //  1. config.yaml / 环境变量中的静态 AccessKeyID + SecretAccessKey
@@ -224,10 +224,10 @@ func ProvideRedis(cfg *config.Config) *redis.Client {
 // Bucket 为空时返回未配置实例（Configured()=false），不阻塞启动。
 //
 // 依赖：*config.Config
-// 提供：*S3ImageStorage（由 service 层通过 wire.Bind 绑定到 service.ImageObjectStorage）
-func ProvideS3ImageStorage(cfg *config.Config) (*S3ImageStorage, error) {
+// 提供：*S3EnovaImageAssetStorage（由 service 层通过 wire.Bind 绑定到 service.EnovaImageAssetStorage）
+func ProvideS3EnovaImageAssetStorage(cfg *config.Config) (*S3EnovaImageAssetStorage, error) {
 	ig := cfg.ImageGeneration
-	storageCfg := service.ImageStorageConfig{
+	storageCfg := service.EnovaImageAssetStorageConfig{
 		Region:                     ig.S3Region,
 		Bucket:                     ig.S3Bucket,
 		Prefix:                     ig.S3Prefix,
@@ -238,5 +238,5 @@ func ProvideS3ImageStorage(cfg *config.Config) (*S3ImageStorage, error) {
 		PublicBaseURL:              ig.S3PublicBaseURL,
 		PresignedURLExpiresSeconds: ig.PresignedURLExpires,
 	}
-	return NewS3ImageStorage(storageCfg)
+	return NewS3EnovaImageAssetStorage(storageCfg)
 }

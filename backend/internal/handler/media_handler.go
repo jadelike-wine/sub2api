@@ -21,13 +21,13 @@ import (
 //
 // 鉴权：使用 HMAC-SHA256 签名 URL，不依赖 JWT（与 S3 presigned URL 语义一致）。
 type MediaHandler struct {
-	storage *repository.LocalImageStorage
+	storage *repository.LocalEnovaImageAssetStorage
 }
 
 // NewMediaHandler 构造媒体 handler。仅在本地存储模式下注入。
-func NewMediaStorageHandler(storage service.ImageObjectStorage) *MediaHandler {
+func NewMediaStorageHandler(storage service.EnovaImageAssetStorage) *MediaHandler {
 	// 类型断言：只有 local 驱动才注册此 handler
-	local, ok := storage.(*repository.LocalImageStorage)
+	local, ok := storage.(*repository.LocalEnovaImageAssetStorage)
 	if !ok {
 		return nil
 	}

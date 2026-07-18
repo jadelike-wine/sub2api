@@ -1979,7 +1979,7 @@ func setDefaults() {
 	viper.SetDefault("image_generation.max_concurrent_per_user", 3)
 	// 存储驱动与本地磁盘配置：必须注册 SetDefault，否则 Viper AutomaticEnv
 	// 不会为这些 key 查找环境变量（AutomaticEnv 仅对已注册的 key 生效）。
-	// 默认值留空，让 ProvideImageStorage factory 自动推断驱动、要求用户显式配置签名密钥。
+	// 默认值留空，让 ProvideEnovaImageAssetStorage factory 自动推断驱动、要求用户显式配置签名密钥。
 	viper.SetDefault("image_generation.storage_driver", "")
 	viper.SetDefault("image_generation.local_storage_path", "")
 	viper.SetDefault("image_generation.local_url_prefix", "")

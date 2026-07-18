@@ -39,9 +39,9 @@ func newTestConfig(localPath, driver, signingSecret, s3Bucket string) *config.Co
 }
 
 // newTestLocalStorage 构造一个使用 t.TempDir() 的本地存储实例。
-func newTestLocalStorage(t *testing.T) *LocalImageStorage {
+func newTestLocalStorage(t *testing.T) *LocalEnovaImageAssetStorage {
 	t.Helper()
-	cfg := service.LocalStorageConfig{
+	cfg := service.EnovaLocalImageAssetStorageConfig{
 		RootPath:                   t.TempDir(),
 		URLPrefix:                  "/api/media",
 		URLSigningSecret:           "test-signing-secret-32bytes-min!!",
@@ -49,9 +49,9 @@ func newTestLocalStorage(t *testing.T) *LocalImageStorage {
 		MinFreeSpaceMB:             1,
 		MaxFileSizeMB:              10,
 	}
-	storage, err := NewLocalImageStorage(cfg)
+	storage, err := NewLocalEnovaImageAssetStorage(cfg)
 	if err != nil {
-		t.Fatalf("NewLocalImageStorage failed: %v", err)
+		t.Fatalf("NewLocalEnovaImageAssetStorage failed: %v", err)
 	}
 	if !storage.Configured() {
 		t.Fatal("storage should be configured")
@@ -59,7 +59,7 @@ func newTestLocalStorage(t *testing.T) *LocalImageStorage {
 	return storage
 }
 
-func TestLocalImageStorage_PutAndHead(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_PutAndHead(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/2026/07/17/test-image.png"
@@ -96,7 +96,7 @@ func TestLocalImageStorage_PutAndHead(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_Delete(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_Delete(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/test.png"
@@ -122,7 +122,7 @@ func TestLocalImageStorage_Delete(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_DeleteNonExistent(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_DeleteNonExistent(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 
@@ -133,7 +133,7 @@ func TestLocalImageStorage_DeleteNonExistent(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_AutoCreateDir(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_AutoCreateDir(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "deep/nested/path/2026/07/image.png"
@@ -153,7 +153,7 @@ func TestLocalImageStorage_AutoCreateDir(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_SameKeyNotOverwritten(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_SameKeyNotOverwritten(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/duplicate.png"
@@ -177,7 +177,7 @@ func TestLocalImageStorage_SameKeyNotOverwritten(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_PathTraversalRejected(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_PathTraversalRejected(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 
@@ -199,7 +199,7 @@ func TestLocalImageStorage_PathTraversalRejected(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_AbsolutePathRejected(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_AbsolutePathRejected(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 
@@ -213,7 +213,7 @@ func TestLocalImageStorage_AbsolutePathRejected(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_InvalidSignatureReturns403(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_InvalidSignatureReturns403(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/test.png"
@@ -233,7 +233,7 @@ func TestLocalImageStorage_InvalidSignatureReturns403(t *testing.T) {
 	_ = url
 }
 
-func TestLocalImageStorage_SignatureVerification(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_SignatureVerification(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/signed.png"
@@ -264,7 +264,7 @@ func TestLocalImageStorage_SignatureVerification(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_ExpiredSignatureReturns403(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_ExpiredSignatureReturns403(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	key := "images/expired.png"
 
@@ -285,7 +285,7 @@ func TestLocalImageStorage_ExpiredSignatureReturns403(t *testing.T) {
 	t.Error("expected time to be expired")
 }
 
-func TestLocalImageStorage_PresignGetReturnsValidURL(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_PresignGetReturnsValidURL(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/presigned.png"
@@ -307,10 +307,10 @@ func TestLocalImageStorage_PresignGetReturnsValidURL(t *testing.T) {
 	}
 }
 
-// TestLocalImageStorage_PresignGet_TimeBucketStability 验证时间桶优化：
+// TestLocalEnovaImageAssetStorage_PresignGet_TimeBucketStability 验证时间桶优化：
 // 同一 key 在同一时间桶内连续多次调用 PresignGet 应返回完全相同的 URL，
 // 使浏览器缓存生效，避免轮询时图片反复重载。
-func TestLocalImageStorage_PresignGet_TimeBucketStability(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_PresignGet_TimeBucketStability(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/bucket-test.png"
@@ -336,9 +336,9 @@ func TestLocalImageStorage_PresignGet_TimeBucketStability(t *testing.T) {
 	}
 }
 
-// TestLocalImageStorage_PresignGet_BucketExpiry 验证时间桶过期时间计算：
+// TestLocalEnovaImageAssetStorage_PresignGet_BucketExpiry 验证时间桶过期时间计算：
 // expires=30min 时，URL 的 expires 参数应至少 30 分钟后，且不超过 60 分钟。
-func TestLocalImageStorage_PresignGet_BucketExpiry(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_PresignGet_BucketExpiry(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/expiry-test.png"
@@ -378,8 +378,8 @@ func TestLocalImageStorage_PresignGet_BucketExpiry(t *testing.T) {
 	}
 }
 
-// TestLocalImageStorage_PresignGet_DifferentKeysDifferentURLs 验证不同 key 生成不同 URL。
-func TestLocalImageStorage_PresignGet_DifferentKeysDifferentURLs(t *testing.T) {
+// TestLocalEnovaImageAssetStorage_PresignGet_DifferentKeysDifferentURLs 验证不同 key 生成不同 URL。
+func TestLocalEnovaImageAssetStorage_PresignGet_DifferentKeysDifferentURLs(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	_, _ = storage.Put(ctx, service.PutObjectInput{Key: "images/a.png", Body: bytes.NewReader([]byte("a")), ContentType: "image/png"})
@@ -392,7 +392,7 @@ func TestLocalImageStorage_PresignGet_DifferentKeysDifferentURLs(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_ServeFileWithRange(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_ServeFileWithRange(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/range-test.png"
@@ -421,7 +421,7 @@ func TestLocalImageStorage_ServeFileWithRange(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_ServeFileHEAD(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_ServeFileHEAD(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/head-test.png"
@@ -445,7 +445,7 @@ func TestLocalImageStorage_ServeFileHEAD(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_TempFileCleanupOnFailure(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_TempFileCleanupOnFailure(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/fail-test.png"
@@ -492,7 +492,7 @@ func (r *failingReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func TestLocalImageStorage_DirectoryNotWritableConfigCheckFails(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_DirectoryNotWritableConfigCheckFails(t *testing.T) {
 	dir := t.TempDir()
 	// 创建目录并设为只读
 	if err := os.Chmod(dir, 0o500); err != nil {
@@ -500,12 +500,12 @@ func TestLocalImageStorage_DirectoryNotWritableConfigCheckFails(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 
-	cfg := service.LocalStorageConfig{
+	cfg := service.EnovaLocalImageAssetStorageConfig{
 		RootPath:                   dir,
 		URLSigningSecret:           "test-secret-32bytes-min!!",
 		PresignedURLExpiresSeconds: 60,
 	}
-	_, err := NewLocalImageStorage(cfg)
+	_, err := NewLocalEnovaImageAssetStorage(cfg)
 	if err == nil {
 		// 在某些环境下 root 用户可以写只读目录，跳过此测试
 		if os.Geteuid() == 0 {
@@ -515,7 +515,7 @@ func TestLocalImageStorage_DirectoryNotWritableConfigCheckFails(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_LocalModeDoesNotRequireS3(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_LocalModeDoesNotRequireS3(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	if storage.Driver() != "local" {
 		t.Errorf("expected driver 'local', got '%s'", storage.Driver())
@@ -528,18 +528,18 @@ func TestLocalImageStorage_LocalModeDoesNotRequireS3(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_MaxFileSizeEnforced(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_MaxFileSizeEnforced(t *testing.T) {
 	dir := t.TempDir()
-	cfg := service.LocalStorageConfig{
+	cfg := service.EnovaLocalImageAssetStorageConfig{
 		RootPath:                   dir,
 		URLSigningSecret:           "test-secret-32bytes-min!!",
 		PresignedURLExpiresSeconds: 60,
 		MinFreeSpaceMB:             1,
 		MaxFileSizeMB:              1, // 1MB
 	}
-	storage, err := NewLocalImageStorage(cfg)
+	storage, err := NewLocalEnovaImageAssetStorage(cfg)
 	if err != nil {
-		t.Fatalf("NewLocalImageStorage failed: %v", err)
+		t.Fatalf("NewLocalEnovaImageAssetStorage failed: %v", err)
 	}
 
 	// 写入 2MB 数据（超过 1MB 限制）
@@ -554,7 +554,7 @@ func TestLocalImageStorage_MaxFileSizeEnforced(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_PresignPutURL(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_PresignPutURL(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	ctx := context.Background()
 	key := "images/upload.png"
@@ -571,7 +571,7 @@ func TestLocalImageStorage_PresignPutURL(t *testing.T) {
 	}
 }
 
-func TestLocalImageStorage_ReceiveUpload(t *testing.T) {
+func TestLocalEnovaImageAssetStorage_ReceiveUpload(t *testing.T) {
 	storage := newTestLocalStorage(t)
 	key := "images/uploaded.png"
 	data := []byte("uploaded-image-data")
@@ -594,29 +594,29 @@ func TestLocalImageStorage_ReceiveUpload(t *testing.T) {
 	}
 }
 
-func TestProvideImageStorage_LocalAutoDetect(t *testing.T) {
+func TestProvideEnovaImageAssetStorage_LocalAutoDetect(t *testing.T) {
 	// 测试无 S3Bucket 时自动选择 local
 	tmpDir := t.TempDir()
 	cfg := newTestConfig(tmpDir, "", "", "")
 	// 不设置 S3Bucket，storage_driver 留空
 
-	storage, err := ProvideImageStorage(cfg)
+	storage, err := ProvideEnovaImageAssetStorage(cfg)
 	if err != nil {
-		t.Fatalf("ProvideImageStorage failed: %v", err)
+		t.Fatalf("ProvideEnovaImageAssetStorage failed: %v", err)
 	}
 	if storage.Driver() != "local" {
 		t.Errorf("expected auto-detected driver 'local', got '%s'", storage.Driver())
 	}
 }
 
-func TestProvideImageStorage_S3AutoDetect(t *testing.T) {
+func TestProvideEnovaImageAssetStorage_S3AutoDetect(t *testing.T) {
 	// 测试有 S3Bucket 时自动选择 s3（AWS SDK 凭据延迟解析，配置加载本身不会失败）
 	tmpDir := t.TempDir()
 	cfg := newTestConfig(tmpDir, "", "", "test-bucket")
 
-	storage, err := ProvideImageStorage(cfg)
+	storage, err := ProvideEnovaImageAssetStorage(cfg)
 	if err != nil {
-		t.Fatalf("ProvideImageStorage failed: %v", err)
+		t.Fatalf("ProvideEnovaImageAssetStorage failed: %v", err)
 	}
 	if storage.Driver() != "s3" {
 		t.Errorf("expected auto-detected driver 's3', got '%s'", storage.Driver())

@@ -30,7 +30,7 @@ const (
 	// 默认配置（当 config 字段未设置时使用）。
 	defaultImageAssetCleanupRetentionDays = 7
 	defaultImageAssetCleanupInterval      = 60 * time.Minute
-	defaultImageAssetCleanupBatchSize      = 100
+	defaultImageAssetCleanupBatchSize     = 100
 	// 单次手动清理最多处理的资产数（防止一次清理拖垮存储）。
 	maxImageAssetManualCleanupBatch = 5000
 )
@@ -59,7 +59,7 @@ return 0
 //   - 不会触碰任何未软删除的活跃资产，避免误删用户正在使用的图片
 type ImageAssetCleanupService struct {
 	assetRepo ImageAssetRepository
-	storage   ImageObjectStorage
+	storage   EnovaImageAssetStorage
 	opsRepo   OpsRepository // 可选，用于记录 heartbeat；为 nil 时跳过
 	db        *sql.DB       // 可选，用于 DB advisory lock 降级
 	redis     *redis.Client // 可选，用于 Redis leader lock
@@ -76,7 +76,7 @@ type ImageAssetCleanupService struct {
 // NewImageAssetCleanupService 构造清理服务。
 func NewImageAssetCleanupService(
 	assetRepo ImageAssetRepository,
-	storage ImageObjectStorage,
+	storage EnovaImageAssetStorage,
 	opsRepo OpsRepository,
 	db *sql.DB,
 	redisClient *redis.Client,
@@ -108,13 +108,13 @@ type CleanupParams struct {
 
 // CleanupResult 清理结果统计。
 type CleanupResult struct {
-	Scanned              int   `json:"scanned"`
-	DeletedAssets        int   `json:"deleted_assets"`
-	DeletedStorageObjects int  `json:"deleted_storage_objects"`
-	StorageFailures      int   `json:"storage_failures"`
-	DBFailures           int   `json:"db_failures"`
-	DurationMs           int64 `json:"duration_ms"`
-	Cutoff               time.Time `json:"cutoff"`
+	Scanned               int       `json:"scanned"`
+	DeletedAssets         int       `json:"deleted_assets"`
+	DeletedStorageObjects int       `json:"deleted_storage_objects"`
+	StorageFailures       int       `json:"storage_failures"`
+	DBFailures            int       `json:"db_failures"`
+	DurationMs            int64     `json:"duration_ms"`
+	Cutoff                time.Time `json:"cutoff"`
 }
 
 // Start 启动定时清理 ticker。幂等：重复调用安全。

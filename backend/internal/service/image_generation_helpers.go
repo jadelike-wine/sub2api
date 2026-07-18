@@ -26,7 +26,7 @@ func downloadAndStoreImage(
 	ctx context.Context,
 	rawURL string,
 	destKey string,
-	storage ImageObjectStorage,
+	storage EnovaImageAssetStorage,
 	maxBytes int64,
 	dialTimeout, headerTimeout, totalTimeout time.Duration,
 ) (*StoredObject, error) {
@@ -93,7 +93,7 @@ func decodeAndStoreBase64Image(
 	b64 string,
 	destKey string,
 	mimeType string,
-	storage ImageObjectStorage,
+	storage EnovaImageAssetStorage,
 	maxBytes int64,
 ) (*StoredObject, error) {
 	if maxBytes <= 0 {

@@ -730,7 +730,7 @@ var ProviderSet = wire.NewSet(
 	ProvideImageAssetCleanupService,
 	ProvideAgnesCredentialScheduler,
 	ProvideImageGenerationDispatcher,
-	// 注意：wire.Bind(new(ImageObjectStorage), new(*repository.S3ImageStorage))
+	// 注意：wire.Bind(new(EnovaImageAssetStorage), new(*repository.S3EnovaImageAssetStorage))
 	// 需要在 cmd/server/wire.go 中声明，避免 service ↔ repository 循环依赖。
 )
 
@@ -853,7 +853,7 @@ func ProvideImageGenerationService(
 	assetRepo ImageAssetRepository,
 	credentialRepo ImageCredentialRepository,
 	scheduler CredentialScheduler,
-	storage ImageObjectStorage,
+	storage EnovaImageAssetStorage,
 	encryptor SecretEncryptor,
 	usageRepo UsageLogRepository,
 	userRepo UserRepository,
@@ -878,7 +878,7 @@ func ProvideImageGenerationService(
 // ProvideImageAssetService 从 config 构造资产服务。
 func ProvideImageAssetService(
 	assetRepo ImageAssetRepository,
-	storage ImageObjectStorage,
+	storage EnovaImageAssetStorage,
 	cfg *config.Config,
 ) *ImageAssetService {
 	maxBytes := cfg.ImageGeneration.MaxInputImageBytes
@@ -899,7 +899,7 @@ func ProvideImageAssetService(
 // 当条件不满足时 Start 内部直接返回，service 仍可被注入（供 admin handler 调用 RunOnce/PreviewCleanup）。
 func ProvideImageAssetCleanupService(
 	assetRepo ImageAssetRepository,
-	storage ImageObjectStorage,
+	storage EnovaImageAssetStorage,
 	opsRepo OpsRepository,
 	db *sql.DB,
 	redisClient *redis.Client,

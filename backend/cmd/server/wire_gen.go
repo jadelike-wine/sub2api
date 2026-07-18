@@ -253,13 +253,13 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	imageCredentialRepository := repository.NewImageCredentialRepository(client)
 	agnesClient := service.ProvideAgnesClient(configConfig)
 	imageCredentialService := service.ProvideImageCredentialService(imageCredentialRepository, secretEncryptor, agnesClient, configConfig)
-	imageObjectStorage, err := repository.ProvideImageStorage(configConfig)
+	enovaImageAssetStorage, err := repository.ProvideEnovaImageAssetStorage(configConfig)
 	if err != nil {
 		return nil, err
 	}
 	imageAssetRepository := repository.NewImageAssetRepository(client)
-	imageAssetCleanupService := service.ProvideImageAssetCleanupService(imageAssetRepository, imageObjectStorage, opsRepository, db, redisClient, configConfig)
-	imageGenerationHandler := admin.NewImageGenerationHandler(imageCredentialService, imageObjectStorage, imageAssetCleanupService, settingService, configConfig)
+	imageAssetCleanupService := service.ProvideImageAssetCleanupService(imageAssetRepository, enovaImageAssetStorage, opsRepository, db, redisClient, configConfig)
+	imageGenerationHandler := admin.NewImageGenerationHandler(imageCredentialService, enovaImageAssetStorage, imageAssetCleanupService, settingService, configConfig)
 	adminHandlers := handler.ProvideAdminHandlers(dashboardHandler, adminUserHandler, groupHandler, accountHandler, adminAnnouncementHandler, dataManagementHandler, backupHandler, oAuthHandler, openAIOAuthHandler, geminiOAuthHandler, antigravityOAuthHandler, grokOAuthHandler, proxyHandler, adminRedeemHandler, promoHandler, settingHandler, opsHandler, systemHandler, adminSubscriptionHandler, adminUsageHandler, userAttributeHandler, errorPassthroughHandler, tlsFingerprintProfileHandler, adminAPIKeyHandler, scheduledTestHandler, channelHandler, channelMonitorHandler, channelMonitorRequestTemplateHandler, contentModerationHandler, paymentHandler, affiliateHandler, complianceHandler, imageGenerationHandler)
 	usageRecordWorkerPool := service.NewUsageRecordWorkerPool(configConfig)
 	userMsgQueueCache := repository.NewUserMsgQueueCache(redisClient)
@@ -282,11 +282,10 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	imageConversationRepository := repository.NewImageConversationRepository(client)
 	imageGenerationRepository := repository.NewImageGenerationRepository(client, db)
 	credentialScheduler := service.ProvideAgnesCredentialScheduler(imageCredentialRepository, agnesClient, secretEncryptor, redisClient, configConfig)
-	imageGenerationService := service.ProvideImageGenerationService(imageConversationRepository, imageGenerationRepository, imageAssetRepository, imageCredentialRepository, credentialScheduler, imageObjectStorage, secretEncryptor, usageLogRepository, userRepository, settingService, configConfig)
-	imageAssetService := service.ProvideImageAssetService(imageAssetRepository, imageObjectStorage, configConfig)
-	imageGenerationDispatcher := service.ProvideImageGenerationDispatcher(imageGenerationService, opsRepository, db, redisClient, configConfig)
+	imageGenerationService := service.ProvideImageGenerationService(imageConversationRepository, imageGenerationRepository, imageAssetRepository, imageCredentialRepository, credentialScheduler, enovaImageAssetStorage, secretEncryptor, usageLogRepository, userRepository, settingService, configConfig)
+	imageAssetService := service.ProvideImageAssetService(imageAssetRepository, enovaImageAssetStorage, configConfig)
 	handlerImageGenerationHandler := handler.NewImageGenerationHandler(imageGenerationService, imageAssetService)
-	mediaHandler := handler.NewMediaStorageHandler(imageObjectStorage)
+	mediaHandler := handler.NewMediaStorageHandler(enovaImageAssetStorage)
 	idempotencyCoordinator := service.ProvideIdempotencyCoordinator(idempotencyRepository, configConfig)
 	idempotencyCleanupService := service.ProvideIdempotencyCleanupService(idempotencyRepository, configConfig)
 	handlers := handler.ProvideHandlers(authHandler, userHandler, apiKeyHandler, usageHandler, redeemHandler, subscriptionHandler, announcementHandler, channelMonitorUserHandler, adminHandlers, gatewayHandler, openAIGatewayHandler, handlerSettingHandler, totpHandler, handlerPaymentHandler, paymentWebhookHandler, availableChannelHandler, batchImageHandler, handlerImageGenerationHandler, mediaHandler, idempotencyCoordinator, idempotencyCleanupService)
@@ -308,6 +307,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	paymentOrderExpiryService := service.ProvidePaymentOrderExpiryService(paymentService, leaderLockCache, db)
 	channelMonitorRunner := service.ProvideChannelMonitorRunner(channelMonitorService, settingService)
 	userPlatformQuotaUsageFlusher := service.ProvideUserPlatformQuotaUsageFlusher(configConfig, billingCache, serviceUserPlatformQuotaRepository, timingWheelService)
+	imageGenerationDispatcher := service.ProvideImageGenerationDispatcher(imageGenerationService, opsRepository, db, redisClient, configConfig)
 	v := provideCleanup(client, redisClient, opsMetricsCollector, opsAggregationService, opsAlertEvaluatorService, opsCleanupService, opsScheduledReportService, opsSystemLogSink, schedulerSnapshotService, tokenRefreshService, accountExpiryService, proxyExpiryService, subscriptionExpiryService, usageCleanupService, idempotencyCleanupService, batchImageCleanupService, batchImageWorkerRuntime, pricingService, emailQueueService, billingCacheService, usageRecordWorkerPool, subscriptionService, oAuthService, openAIOAuthService, geminiOAuthService, antigravityOAuthService, grokOAuthService, openAIGatewayService, scheduledTestRunnerService, backupService, paymentOrderExpiryService, channelMonitorRunner, userPlatformQuotaUsageFlusher, imageAssetCleanupService, imageGenerationDispatcher)
 	application := &Application{
 		Server:  httpServer,
@@ -546,20 +546,20 @@ func provideCleanup(
 				return nil
 			}},
 			{"ImageAssetCleanupService", func() error {
-			if imageAssetCleanup != nil {
-				imageAssetCleanup.Stop()
-			}
-			return nil
-		}},
-		{"ImageGenerationDispatcher", func() error {
-			if imageGenerationDispatcher != nil {
-				imageGenerationDispatcher.Stop()
-			}
-			return nil
-		}},
-	}
+				if imageAssetCleanup != nil {
+					imageAssetCleanup.Stop()
+				}
+				return nil
+			}},
+			{"ImageGenerationDispatcher", func() error {
+				if imageGenerationDispatcher != nil {
+					imageGenerationDispatcher.Stop()
+				}
+				return nil
+			}},
+		}
 
-	infraSteps := []cleanupStep{
+		infraSteps := []cleanupStep{
 			{"Redis", func() error {
 				if rdb == nil {
 					return nil
