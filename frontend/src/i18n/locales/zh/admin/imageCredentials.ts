@@ -74,15 +74,16 @@ export default {
     // 存储状态
     storage: {
       title: '存储配置',
-      description: '展示当前图片存储驱动及可用状态',
+      description: '展示当前图片存储驱动及可用状态。S3 模式下复用数据备份中的 S3/R2 配置，使用 image-generation/ 前缀隔离。',
       configured: '已配置',
       notConfigured: '未配置',
       driver: '存储驱动',
       driverLocal: '本地磁盘',
-      driverS3: 'S3',
+      driverS3: 'S3（共享配置）',
       bucket: 'Bucket',
       notAvailable: '—',
-      hint: '在服务端 config.yaml 或环境变量中配置存储参数（storage_driver: local 或 s3）'
+      hint: 'S3 模式下请在「设置 → 系统设置 → 数据备份 → S3/R2 存储配置」中维护凭证。Local 模式请在服务端 config.yaml 中配置 local_* 参数。',
+      goToBackupConfig: '前往配置 S3/R2 存储'
     },
     // 孤立资产清理
     cleanup: {

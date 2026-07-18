@@ -101,9 +101,13 @@ type Config struct {
 }
 
 // AgnesChatConfig 配置 Agnes 2.0 Flash 多模态聊天适配：
-// 将下游 OpenAI Chat Completions 中的 data:image/...;base64 图片上传到 Cloudflare R2，
+// 将下游 OpenAI Chat Completions 中的 data:image/...;base64 图片上传到对象存储，
 // 替换为公网可访问的 HTTPS URL，再以原始 Chat Completions 转发到 Agnes 上游。
 // 仅对账号 Extra["agnes_chat_image_adapter"]=true 的 OpenAI APIKey 账号生效。
+//
+// 对象存储凭证不再在此处配置，统一由数据库 settings 表中的公共 S3/R2 配置
+// （见 service.BackupS3Config / SharedObjectStorageConfigReader）提供。
+// 运行时通过 lazyAgnesChatImageStorage 懒加载读取。
 type AgnesChatConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 
@@ -111,39 +115,20 @@ type AgnesChatConfig struct {
 	MaxImagesPerRequest int   `mapstructure:"max_images_per_request"` // 单次请求最多图片数
 	MaxImageBytes       int64 `mapstructure:"max_image_bytes"`        // 单张图片解码后字节上限
 	MaxTotalBytes       int64 `mapstructure:"max_total_bytes"`        // 单次请求所有图片字节总和上限
-
-	// Cloudflare R2（S3 兼容）
-	R2 AgnesChatR2Config `mapstructure:"r2"`
 }
 
-// AgnesChatR2Config 是 Agnes 多模态聊天图片上传专用的 R2/S3 配置。
-// 与 ImageStorageConfig 隔离，避免污染生图资产桶。
-type AgnesChatR2Config struct {
-	Endpoint            string `mapstructure:"endpoint"` // e.g. https://<account_id>.r2.cloudflarestorage.com
-	Region              string `mapstructure:"region"`   // R2 用 "auto"
-	Bucket              string `mapstructure:"bucket"`
-	AccessKeyID         string `mapstructure:"access_key_id"`
-	SecretAccessKey     string `mapstructure:"secret_access_key"`
-	Prefix              string `mapstructure:"prefix"`              // S3 key 前缀，如 "agnes-chat"
-	ForcePathStyle      bool   `mapstructure:"force_path_style"`    // MinIO/路径风格桶；R2 默认 false
-	PublicBaseURL       string `mapstructure:"public_base_url"`     // 配了则返回 public_base_url/key 直链；否则 presigned
-	PresignExpiresSeconds int  `mapstructure:"presign_expires_seconds"` // presigned URL 有效期(秒)
-}
-
-// IsConfigured 检查 R2 必要字段是否已配置。
-// endpoint 是必需项：缺失会导致 S3 客户端回退到默认 AWS 地址，
-// 上传时才在运行时失败（表现为 502），而非启动期明确报错。
-func (c *AgnesChatR2Config) IsConfigured() bool {
-	return c.Endpoint != "" && c.Bucket != "" && c.AccessKeyID != "" && c.SecretAccessKey != ""
-}
-
-// Active 返回 Agnes 聊天图片适配是否可用：开关打开、R2 凭证齐全且限制有效
+// Active 返回 Agnes 聊天图片适配是否已启用并配置了有效的限制。
+// 注意：对象存储凭证就绪状态由 storage.Configured() 判断，不在此处检查。
 func (c *AgnesChatConfig) Active() bool {
-	return c.Enabled && c.R2.IsConfigured() && c.MaxImagesPerRequest > 0 && c.MaxImageBytes > 0 && c.MaxTotalBytes > 0
+	return c.Enabled && c.MaxImagesPerRequest > 0 && c.MaxImageBytes > 0 && c.MaxTotalBytes > 0
 }
 
-// ImageGenerationConfig 配置 AI 图片生成功能（Agnes 上游 + AWS S3 持久化）。
-// AWS 凭据优先走 IAM Role / 环境变量；如需在管理后台配置，则通过 settings 表覆盖。
+// ImageGenerationConfig 配置 AI 图片生成功能（Agnes 上游 + 对象存储持久化）。
+//
+// 对象存储（S3/R2）凭证不再在此处配置，统一由数据库 settings 表中的公共 S3/R2 配置
+// （见 service.BackupS3Config / SharedObjectStorageConfigReader）提供。
+// AI 生图使用固定前缀 image-generation/ 与数据库备份（backups/）和 Agnes 聊天图片（agnes-chat/）隔离。
+// 仅 storage_driver=local 时仍从此处读取 local_* 字段。
 type ImageGenerationConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 
@@ -173,20 +158,12 @@ type ImageGenerationConfig struct {
 	MaxInputImageBytes   int64 `mapstructure:"max_input_image_bytes"`
 	MaxOutputImageBytes  int64 `mapstructure:"max_output_image_bytes"`
 
-	// S3 / 对象存储（环境变量兜底；管理后台 settings 可覆盖）
-	S3Region            string `mapstructure:"s3_region"`
-	S3Bucket            string `mapstructure:"s3_bucket"`
-	S3Prefix            string `mapstructure:"s3_prefix"`
-	S3Endpoint          string `mapstructure:"s3_endpoint"`
-	S3ForcePathStyle    bool   `mapstructure:"s3_force_path_style"`
-	S3AccessKeyID       string `mapstructure:"s3_access_key_id"`
-	S3SecretAccessKey   string `mapstructure:"s3_secret_access_key"`
-	S3PublicBaseURL     string `mapstructure:"s3_public_base_url"`
-	PresignedURLExpires int    `mapstructure:"presigned_url_expires"` // 秒
-
 	// 存储驱动选择与本地磁盘存储配置
-	// StorageDriver: "local" 或 "s3"；留空时自动推断（有 S3Bucket 则 s3，否则 local）
+	// StorageDriver: "local" 或 "s3"；留空时默认 s3（懒加载共享配置）
+	// s3 模式下凭证从数据库 settings 表读取（backup_s3_config），不再从 config.yaml 读取
 	StorageDriver string `mapstructure:"storage_driver"`
+	// PresignedURLExpires: presigned URL 有效期（秒），仅 local 模式使用；s3 模式固定 1800
+	PresignedURLExpires int `mapstructure:"presigned_url_expires"`
 	// LocalStoragePath: 本地文件存储根目录（如 /app/data/media）
 	LocalStoragePath string `mapstructure:"local_storage_path"`
 	// LocalURLPrefix: 本地媒体访问 URL 前缀（如 /api/media）
@@ -2067,15 +2044,14 @@ func setDefaults() {
 	viper.SetDefault("image_generation.max_input_images_per_gen", 6)
 	viper.SetDefault("image_generation.max_input_image_bytes", 10485760)  // 10MB
 	viper.SetDefault("image_generation.max_output_image_bytes", 52428800) // 50MB
-	viper.SetDefault("image_generation.s3_prefix", "media/images")
-	viper.SetDefault("image_generation.s3_force_path_style", false)
-	viper.SetDefault("image_generation.presigned_url_expires", 1800) // 30 分钟
+	// S3 凭证已迁移到数据库 settings 表（backup_s3_config），不再从 config.yaml 读取
+	viper.SetDefault("image_generation.presigned_url_expires", 1800) // 30 分钟（仅 local 模式使用）
 	viper.SetDefault("image_generation.stale_processing_after_seconds", 300)
 	viper.SetDefault("image_generation.recovery_interval_seconds", 60)
 	viper.SetDefault("image_generation.max_concurrent_per_user", 3)
 	// 存储驱动与本地磁盘配置：必须注册 SetDefault，否则 Viper AutomaticEnv
 	// 不会为这些 key 查找环境变量（AutomaticEnv 仅对已注册的 key 生效）。
-	// 默认值留空，让 ProvideEnovaImageAssetStorage factory 自动推断驱动、要求用户显式配置签名密钥。
+	// 默认值留空，storage_driver 留空时默认 s3（懒加载共享配置）。
 	viper.SetDefault("image_generation.storage_driver", "")
 	viper.SetDefault("image_generation.local_storage_path", "")
 	viper.SetDefault("image_generation.local_url_prefix", "")
@@ -2099,16 +2075,13 @@ func setDefaults() {
 	viper.SetDefault("image_storage.presign_expiry_hours", 24)
 	viper.SetDefault("image_storage.max_download_bytes", 33554432)
 
-	// Agnes 2.0 Flash 多模态聊天图片适配（data URL → Cloudflare R2）
-	// 默认关闭：需要管理员显式配置 R2 凭证后启用
+	// Agnes 2.0 Flash 多模态聊天图片适配（data URL → 公共对象存储）
+	// 默认关闭：需要管理员在系统设置→数据备份中配置 S3/R2 存储后启用
+	// 对象存储凭证不再走环境变量，统一从数据库 settings 表读取
 	viper.SetDefault("agnes_chat.enabled", false)
 	viper.SetDefault("agnes_chat.max_images_per_request", 6)
 	viper.SetDefault("agnes_chat.max_image_bytes", 10485760)   // 10MB（解码后字节）
 	viper.SetDefault("agnes_chat.max_total_bytes", 52428800)   // 50MB（单请求总字节）
-	viper.SetDefault("agnes_chat.r2.region", "auto")
-	viper.SetDefault("agnes_chat.r2.prefix", "agnes-chat")
-	viper.SetDefault("agnes_chat.r2.force_path_style", false)
-	viper.SetDefault("agnes_chat.r2.presign_expires_seconds", 1800) // 30 分钟，与 OpenAI 客户端默认超时兼容
 
 	// Ops (vNext)
 	viper.SetDefault("ops.enabled", true)

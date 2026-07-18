@@ -12,7 +12,8 @@ import (
 // 安全约束：
 //   - Bucket/目录默认私有，前端通过 PresignGet 获取短期访问 URL
 //   - 数据库只保存对象 Key，不保存短时 Presigned URL
-//   - Key 必须位于当前用户目录（media/images/{user_id}/...）
+//   - 新对象 Key 格式为 {user_id}/...，存储层自动叠加 image-generation/ 前缀；
+//     旧记录 Key 为 media/images/{user_id}/...，fullKey 兼容分支跳过前缀拼接
 type EnovaImageAssetStorage interface {
 	// Put 上传一个对象，返回存储结果（含实际大小）。
 	Put(ctx context.Context, input PutObjectInput) (*StoredObject, error)

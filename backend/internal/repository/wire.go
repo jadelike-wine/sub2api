@@ -106,10 +106,10 @@ var ProviderSet = wire.NewSet(
 	NewImageGenerationRepository,
 	NewImageAssetRepository,
 	NewImageCredentialRepository,
-	ProvideS3EnovaImageAssetStorage,
-	// ProvideEnovaImageAssetStorage 是存储工厂，根据 storage_driver 选择 local 或 s3 实现。
-	// 返回 service.EnovaImageAssetStorage 接口，替代之前的 wire.Bind 方式。
+	// ProvideEnovaImageAssetStorage 是存储工厂，根据 storage_driver 选择 local 或懒加载 s3 实现。
+	// s3 模式下复用 backup_s3_config（数据库 settings 表），使用独立前缀 image-generation/。
 	ProvideEnovaImageAssetStorage,
+	ProvideImageGenerationStorage,
 
 	// Cache implementations
 	NewGatewayCache,
@@ -149,6 +149,10 @@ var ProviderSet = wire.NewSet(
 	// Backup infrastructure
 	NewPgDumper,
 	NewS3BackupStoreFactory,
+
+	// Agnes 多模态聊天图片存储（懒加载，复用数据库公共 S3/R2 配置）
+	NewS3EnovaImageAssetStorageFactory,
+	ProvideAgnesChatImageStorage,
 
 	// Image storage (async image task result offload)
 	ProvideImageStorage,
@@ -235,28 +239,6 @@ func ProvideRedis(cfg *config.Config) *redis.Client {
 	return InitRedis(cfg)
 }
 
-// ProvideS3EnovaImageAssetStorage 从 config.Config 构造 S3 图片存储。
-//
-// AWS 凭据优先级：
-//  1. config.yaml / 环境变量中的静态 AccessKeyID + SecretAccessKey
-//  2. EC2 IAM Role / ECS Task Role（当两者为空时，awsconfig.LoadDefaultConfig 自动走链）
-//
-// Bucket 为空时返回未配置实例（Configured()=false），不阻塞启动。
-//
-// 依赖：*config.Config
-// 提供：*S3EnovaImageAssetStorage（由 service 层通过 wire.Bind 绑定到 service.EnovaImageAssetStorage）
-func ProvideS3EnovaImageAssetStorage(cfg *config.Config) (*S3EnovaImageAssetStorage, error) {
-	ig := cfg.ImageGeneration
-	storageCfg := service.EnovaImageAssetStorageConfig{
-		Region:                     ig.S3Region,
-		Bucket:                     ig.S3Bucket,
-		Prefix:                     ig.S3Prefix,
-		Endpoint:                   ig.S3Endpoint,
-		ForcePathStyle:             ig.S3ForcePathStyle,
-		AccessKeyID:                ig.S3AccessKeyID,
-		SecretAccessKey:            ig.S3SecretAccessKey,
-		PublicBaseURL:              ig.S3PublicBaseURL,
-		PresignedURLExpiresSeconds: ig.PresignedURLExpires,
-	}
-	return NewS3EnovaImageAssetStorage(storageCfg)
-}
+// ProvideS3EnovaImageAssetStorage 已废弃：AI 生图 S3 存储已统一到数据库 backup_s3_config，
+// 由 ProvideImageGenerationStorage 懒加载实现。此函数保留为空占位，避免外部引用编译错误。
+// Deprecated: 使用 ProvideImageGenerationStorage 或 ProvideEnovaImageAssetStorage 代替。

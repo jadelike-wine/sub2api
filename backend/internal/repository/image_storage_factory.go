@@ -11,23 +11,25 @@ import (
 // ProvideEnovaImageAssetStorage 是对象存储工厂，根据 config.ImageGeneration.StorageDriver 选择实现。
 //
 // 选择逻辑：
-//  1. storage_driver=local → LocalEnovaImageAssetStorage（不要求任何 S3 配置）
-//  2. storage_driver=s3 → S3EnovaImageAssetStorage（原有逻辑）
-//  3. storage_driver 留空 → 自动推断：有 S3Bucket 则用 s3，否则用 local
+//  1. storage_driver=local → LocalEnovaImageAssetStorage（从 config.yaml 的 local_* 字段读取配置）
+//  2. storage_driver=s3（或留空）→ lazyImageGenerationStorage（懒加载，从数据库 settings 表读取共享 S3/R2 配置）
+//
+// S3 模式下不再从 config.yaml 的 s3_* 字段读取凭证，统一复用 backup_s3_config，
+// 与数据库备份和 Agnes Chat 共用同一套配置，使用独立前缀 image-generation/ 隔离对象。
 //
 // 返回 service.EnovaImageAssetStorage 接口，无需 wire.Bind。
-func ProvideEnovaImageAssetStorage(cfg *config.Config) (service.EnovaImageAssetStorage, error) {
+func ProvideEnovaImageAssetStorage(
+	cfg *config.Config,
+	reader service.SharedObjectStorageConfigReader,
+	factory service.EnovaImageAssetStorageFactory,
+) (service.EnovaImageAssetStorage, error) {
 	ig := cfg.ImageGeneration
 	driver := ig.StorageDriver
 
-	// 自动推断
+	// 留空时默认 s3（懒加载共享配置），未配置时 Configured()=false 不阻塞启动
 	if driver == "" {
-		if ig.S3Bucket != "" {
-			driver = "s3"
-		} else {
-			driver = "local"
-		}
-		log.Printf("[EnovaImageAssetStorage] storage_driver not set, auto-detected: %s", driver)
+		driver = "s3"
+		log.Printf("[EnovaImageAssetStorage] storage_driver not set, defaulting to s3 (shared config)")
 	}
 
 	switch driver {
@@ -54,25 +56,8 @@ func ProvideEnovaImageAssetStorage(cfg *config.Config) (service.EnovaImageAssetS
 		return storage, nil
 
 	case "s3":
-		s3Cfg := service.EnovaImageAssetStorageConfig{
-			Region:                     ig.S3Region,
-			Bucket:                     ig.S3Bucket,
-			Prefix:                     ig.S3Prefix,
-			Endpoint:                   ig.S3Endpoint,
-			ForcePathStyle:             ig.S3ForcePathStyle,
-			AccessKeyID:                ig.S3AccessKeyID,
-			SecretAccessKey:            ig.S3SecretAccessKey,
-			PublicBaseURL:              ig.S3PublicBaseURL,
-			PresignedURLExpiresSeconds: ig.PresignedURLExpires,
-		}
-		storage, err := NewS3EnovaImageAssetStorage(s3Cfg)
-		if err != nil {
-			return nil, fmt.Errorf("init s3 storage: %w", err)
-		}
-		if !storage.Configured() {
-			log.Printf("[EnovaImageAssetStorage] S3 storage not configured (bucket empty)")
-		}
-		return storage, nil
+		// 懒加载：每次操作前从数据库读取共享 S3/R2 配置
+		return ProvideImageGenerationStorage(reader, factory)
 
 	default:
 		return nil, fmt.Errorf("unknown storage_driver: %s (must be 'local' or 's3')", driver)

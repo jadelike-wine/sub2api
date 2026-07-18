@@ -12,6 +12,9 @@
               <button type="button" class="text-primary-600 underline hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300" @click="showR2Guide = true">Cloudflare R2</button>
               {{ t('admin.backup.s3.descriptionSuffix') }}
             </p>
+            <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+              {{ t('admin.backup.s3.sharedUsageNote') }}
+            </p>
           </div>
         </div>
         <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -29,7 +32,8 @@
           </div>
           <div>
             <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.backup.s3.prefix') }}</label>
-            <input v-model="s3Form.prefix" class="input w-full" placeholder="backups/" />
+            <input :value="'backups/'" class="input w-full cursor-not-allowed opacity-60" readonly disabled />
+            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">{{ t('admin.backup.s3.prefixFixedHint') }}</p>
           </div>
           <div>
             <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.backup.s3.accessKeyId') }}</label>
@@ -38,6 +42,48 @@
           <div>
             <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.backup.s3.secretAccessKey') }}</label>
             <input v-model="s3Form.secret_access_key" type="password" class="input w-full" :placeholder="s3SecretConfigured ? t('admin.backup.s3.secretConfigured') : ''" />
+          </div>
+          <div class="md:col-span-2">
+            <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.backup.s3.publicBaseUrl') }}</label>
+            <input v-model="s3Form.public_base_url" class="input w-full" placeholder="https://cdn.example.com（留空则使用 presigned 链接）" />
+            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">{{ t('admin.backup.s3.publicBaseUrlHint') }}</p>
+            <div
+              v-if="s3Form.public_base_url"
+              class="mt-2 rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+            >
+              <span class="font-semibold">⚠</span>
+              {{ t('admin.backup.s3.publicBaseUrlSecurityWarning') }}
+            </div>
+          </div>
+          <div class="md:col-span-2">
+            <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">{{ t('admin.backup.s3.additionalPublicBaseUrls') }}</label>
+            <textarea
+              v-model="additionalPublicBaseUrlsText"
+              class="input w-full font-mono text-xs"
+              rows="2"
+              :placeholder="t('admin.backup.s3.additionalPublicBaseUrlsPlaceholder')"
+            />
+            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">{{ t('admin.backup.s3.additionalPublicBaseUrlsHint') }}</p>
+          </div>
+          <div
+            v-if="s3Form.public_base_url"
+            class="md:col-span-2 rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20"
+          >
+            <label class="flex items-start gap-2 text-xs text-amber-800 dark:text-amber-300">
+              <input
+                v-model="s3Form.bucket_privacy_attested"
+                type="checkbox"
+                class="mt-0.5"
+              />
+              <span>
+                <span class="font-semibold">{{ t('admin.backup.s3.bucketPrivacyAttestedLabel') }}</span>
+                <br />
+                {{ t('admin.backup.s3.bucketPrivacyAttestedHint') }}
+              </span>
+            </label>
+            <p v-if="!s3Form.bucket_privacy_attested" class="mt-2 ml-6 text-xs font-semibold text-red-600 dark:text-red-400">
+              {{ t('admin.backup.s3.bucketPrivacyAttestedRequired') }}
+            </p>
           </div>
           <label class="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 md:col-span-2">
             <input v-model="s3Form.force_path_style" type="checkbox" />
@@ -48,7 +94,12 @@
           <button type="button" class="btn btn-secondary btn-sm" :disabled="testingS3" @click="testS3">
             {{ testingS3 ? t('common.loading') : t('admin.backup.s3.testConnection') }}
           </button>
-          <button type="button" class="btn btn-primary btn-sm" :disabled="savingS3" @click="saveS3Config">
+          <button
+            type="button"
+            class="btn btn-primary btn-sm"
+            :disabled="savingS3 || (s3Form.public_base_url !== '' && !s3Form.bucket_privacy_attested)"
+            @click="saveS3Config"
+          >
             {{ savingS3 ? t('common.loading') : t('common.save') }}
           </button>
         </div>
@@ -312,10 +363,24 @@ const s3Form = ref<BackupS3Config>({
   secret_access_key: '',
   prefix: 'backups/',
   force_path_style: false,
+  public_base_url: '',
+  additional_public_base_urls: [],
+  bucket_privacy_attested: false,
 })
 const s3SecretConfigured = ref(false)
 const savingS3 = ref(false)
 const testingS3 = ref(false)
+
+// additional_public_base_urls 以多行文本编辑，提交时拆分为数组，加载时合并为文本。
+const additionalPublicBaseUrlsText = computed({
+  get: () => (s3Form.value.additional_public_base_urls ?? []).join('\n'),
+  set: (val: string) => {
+    s3Form.value.additional_public_base_urls = val
+      .split('\n')
+      .map(s => s.trim())
+      .filter(s => s.length > 0)
+  },
+})
 
 // Schedule config
 const scheduleForm = ref<BackupScheduleConfig>({
@@ -461,6 +526,9 @@ async function loadS3Config() {
       secret_access_key: '',
       prefix: cfg.prefix || 'backups/',
       force_path_style: cfg.force_path_style,
+      public_base_url: cfg.public_base_url || '',
+      additional_public_base_urls: cfg.additional_public_base_urls ?? [],
+      bucket_privacy_attested: cfg.bucket_privacy_attested ?? false,
     }
     s3SecretConfigured.value = Boolean(cfg.access_key_id)
   } catch (error) {

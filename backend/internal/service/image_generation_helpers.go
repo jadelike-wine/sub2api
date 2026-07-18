@@ -208,5 +208,7 @@ func isAllowedImageMime(mime string) bool {
 	return allowedImageMimeTypesSvc[mime]
 }
 
-// errStorageNotConfigured 当对象存储未配置时返回。
-var errStorageNotConfigured = errors.New("image storage is not configured")
+// ErrStorageNotConfigured 当对象存储未配置时返回。
+// 由 image asset service 和 Agnes chat image storage（repository 层懒加载实现）共同使用，
+// 以便上层通过 errors.Is(err, service.ErrStorageNotConfigured) 判断是否因未配置导致失败。
+var ErrStorageNotConfigured = errors.New("image storage is not configured")

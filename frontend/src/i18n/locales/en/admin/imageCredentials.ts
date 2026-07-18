@@ -69,15 +69,16 @@ export default {
     },
     storage: {
       title: 'Storage',
-      description: 'Current image storage driver and availability',
+      description: 'Current image storage driver and availability. S3 mode reuses the S3/R2 config from Data Backup, isolated via image-generation/ prefix.',
       configured: 'Configured',
       notConfigured: 'Not Configured',
       driver: 'Driver',
       driverLocal: 'Local Disk',
-      driverS3: 'S3',
+      driverS3: 'S3 (Shared Config)',
       bucket: 'Bucket',
       notAvailable: '—',
-      hint: 'Configure storage in server-side config.yaml or env vars (storage_driver: local or s3)'
+      hint: 'In S3 mode, configure credentials under Settings → System Settings → Data Backup → S3/R2 Storage Config. In local mode, set local_* params in config.yaml.',
+      goToBackupConfig: 'Go to S3/R2 Storage Config'
     },
     cleanup: {
       title: 'Orphan Asset Cleanup',

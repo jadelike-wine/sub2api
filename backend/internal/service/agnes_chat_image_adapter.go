@@ -106,7 +106,8 @@ func (a *AgnesChatImageAdapter) AdaptBody(ctx context.Context, c *gin.Context, b
 	}
 
 	cfg := a.cfg.AgnesChat
-	// 配置未启用或未配置 R2 + 存储实例未就绪：对真实 data URL 图片块返回 503，其他请求透传
+	// 配置未启用 + 存储实例未就绪：对真实 data URL 图片块返回 503，其他请求透传
+	// 注意：存储配置（S3/R2 凭证）由数据库 settings 表统一管理，storage.Configured() 已覆盖
 	storageReady := a.storage != nil && a.storage.Configured() && cfg.Active()
 	if !storageReady {
 		// 必须使用结构化检测，不能全文匹配 "data:image" 关键字，
@@ -344,7 +345,7 @@ func (a *AgnesChatImageAdapter) processDataURL(
 	stored, err := decodeAndStoreBase64Image(ctx, b64Data, destKey, mimeType, a.storage, maxImageBytes)
 	if err != nil {
 		// 区分存储未配置 vs 上传失败
-		if errors.Is(err, errStorageNotConfigured) {
+		if errors.Is(err, ErrStorageNotConfigured) {
 			return "", newServiceUnavailableError("Agnes chat image storage is not configured")
 		}
 		// 上传失败：返回 502，不泄露内部错误细节

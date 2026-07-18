@@ -71,6 +71,8 @@ func (s *agnesChatFakeStorage) Configured() bool { return s.configured }
 func (s *agnesChatFakeStorage) Driver() string   { return "s3" }
 
 // agnesChatTestConfig 构造 Agnes 适配器测试用的配置。
+// 注意：对象存储凭证不再在此处配置，统一由数据库 settings 表管理（见 SharedObjectStorageConfigReader）。
+// 测试中通过 agnesChatFakeStorage.Configured() 模拟存储就绪状态。
 func agnesChatTestConfig() *config.Config {
 	return &config.Config{
 		AgnesChat: config.AgnesChatConfig{
@@ -78,16 +80,6 @@ func agnesChatTestConfig() *config.Config {
 			MaxImagesPerRequest: 6,
 			MaxImageBytes:       1024 * 1024, // 1MB
 			MaxTotalBytes:       5 * 1024 * 1024,
-			R2: config.AgnesChatR2Config{
-				Endpoint:              "https://test.r2.cloudflarestorage.com",
-				Region:                "auto",
-				Bucket:                "agnes-chat-bucket",
-				AccessKeyID:           "test-key-id",
-				SecretAccessKey:       "test-secret",
-				Prefix:                "agnes-chat",
-				PublicBaseURL:         "https://r2.example.com",
-				PresignExpiresSeconds: 1800,
-			},
 		},
 	}
 }
@@ -814,58 +806,6 @@ func TestForwardAsRawChatCompletions_AccountWithoutAdapterFlag(t *testing.T) {
 
 // ---- 回归测试：修复 3 个 important 问题 ----
 
-// TestAgnesChatR2Config_IsConfigured_RequiresEndpoint 验证 endpoint 缺失时
-// IsConfigured() 返回 false（修复 issue #1）。
-func TestAgnesChatR2Config_IsConfigured_RequiresEndpoint(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		cfg      config.AgnesChatR2Config
-		expected bool
-	}{
-		{
-			name:     "all empty",
-			cfg:      config.AgnesChatR2Config{},
-			expected: false,
-		},
-		{
-			name: "missing endpoint",
-			cfg: config.AgnesChatR2Config{
-				Bucket:          "agnes-chat",
-				AccessKeyID:     "key-id",
-				SecretAccessKey: "secret",
-				// Endpoint 故意留空
-			},
-			expected: false,
-		},
-		{
-			name: "missing bucket",
-			cfg: config.AgnesChatR2Config{
-				Endpoint:        "https://r2.cloudflarestorage.com",
-				AccessKeyID:     "key-id",
-				SecretAccessKey: "secret",
-			},
-			expected: false,
-		},
-		{
-			name: "all set",
-			cfg: config.AgnesChatR2Config{
-				Endpoint:        "https://r2.cloudflarestorage.com",
-				Bucket:          "agnes-chat",
-				AccessKeyID:     "key-id",
-				SecretAccessKey: "secret",
-			},
-			expected: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			require.Equal(t, tt.expected, tt.cfg.IsConfigured())
-		})
-	}
-}
-
 // TestAgnesChatImageAdapter_TextWithKeywordsNotTreatedAsImage 验证纯文本消息中
 // 出现 "image_url" 和 "data:image" 关键字时不会被误判为图片请求（修复 issue #2）。
 func TestAgnesChatImageAdapter_TextWithKeywordsNotTreatedAsImage(t *testing.T) {
@@ -1013,12 +953,6 @@ func TestAgnesChatImageAdapter_RejectsForgedImageMagicBytes(t *testing.T) {
 // 文件签名能通过 magic bytes 校验。
 func TestAgnesChatImageAdapter_AcceptsValidMagicBytes(t *testing.T) {
 	t.Parallel()
-	storage := &agnesChatFakeStorage{configured: true}
-	adapter := ProvideAgnesChatImageAdapter(storage, agnesChatTestConfig())
-
-	ctx := context.WithValue(context.Background(), ctxkey.UserID, int64(42))
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 
 	tests := []struct {
 		name     string
@@ -1054,21 +988,26 @@ func TestAgnesChatImageAdapter_AcceptsValidMagicBytes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			// 每个子测试使用独立的 storage，避免并行竞态
+			storage := &agnesChatFakeStorage{configured: true}
+			adapter := ProvideAgnesChatImageAdapter(storage, agnesChatTestConfig())
+
+			ctx := context.WithValue(context.Background(), ctxkey.UserID, int64(42))
+			gin.SetMode(gin.TestMode)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
 			b64 := base64.StdEncoding.EncodeToString(tt.content)
 			dataURL := "data:" + tt.declared + ";base64," + b64
 			body := []byte(`{"model":"x","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + dataURL + `"}}]}]}`)
 
 			out, err := adapter.AdaptBody(ctx, c, body)
 			require.NoError(t, err, "valid %s should pass magic bytes check", tt.declared)
-			// 应该已上传到 R2
-			require.Len(t, storage.uploadedKeys, 1, "image should be uploaded to R2")
-			// body 中的 data URL 应被替换为 R2 URL
+			// 应该已上传到对象存储
+			require.Len(t, storage.uploadedKeys, 1, "image should be uploaded to storage")
+			// body 中的 data URL 应被替换为存储 URL
 			require.NotContains(t, string(out), "data:image")
 			url := gjson.GetBytes(out, "messages.0.content.0.image_url.url").String()
-			require.True(t, strings.HasPrefix(url, "https://r2.example.com/"), "expected R2 URL, got %s", url)
-			// 重置 storage 状态供下一个子测试使用
-			storage.uploadedKeys = nil
-			storage.presignedKeys = nil
+			require.True(t, strings.HasPrefix(url, "https://r2.example.com/"), "expected storage URL, got %s", url)
 			storage.uploadedBodies = nil
 		})
 	}
@@ -1082,19 +1021,17 @@ func TestVerifyImageMagicBytes_InvalidBase64(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestAgnesChatImageAdapter_EndpointMissingReturns503 验证 endpoint 缺失时
-// 配置不视为就绪，data URL 请求返回 503 而非 502（修复 issue #1 的运行时行为）。
-func TestAgnesChatImageAdapter_EndpointMissingReturns503(t *testing.T) {
+// TestAgnesChatImageAdapter_StorageNotConfiguredReturns503 验证对象存储未配置时
+// （storage.Configured()=false），data URL 请求返回 503 而非 502。
+// 这是统一存储配置后的核心行为：Agnes 不再读取环境变量，未配置时明确报错。
+func TestAgnesChatImageAdapter_StorageNotConfiguredReturns503(t *testing.T) {
 	t.Parallel()
-	// 模拟 endpoint 缺失：cfg.Active() 返回 false
+	// 存储未配置：模拟数据库 settings 表中未保存 S3/R2 配置
 	cfg := agnesChatTestConfig()
-	cfg.AgnesChat.R2.Endpoint = "" // 清空 endpoint
-	// 此处 cfg.Active() 应为 false，因为 IsConfigured() 要求 endpoint 非空
-	require.False(t, cfg.AgnesChat.Active(), "config without endpoint should not be active")
+	require.True(t, cfg.AgnesChat.Active(), "Enabled + limits 有效时 Active() 应为 true")
 
-	// storage.Configured()=true（模拟 S3 客户端已创建），但 cfg.Active()=false
-	// 适配器应使用 cfg.Active() 判断，返回 503
-	storage := &agnesChatFakeStorage{configured: true}
+	// storage.Configured()=false：模拟懒加载存储读取数据库配置时返回 nil
+	storage := &agnesChatFakeStorage{configured: false}
 	adapter := ProvideAgnesChatImageAdapter(storage, cfg)
 
 	dataURL := makePNGDataURL()
@@ -1108,6 +1045,6 @@ func TestAgnesChatImageAdapter_EndpointMissingReturns503(t *testing.T) {
 	require.Error(t, err)
 	var adapterErr *AgnesChatImageAdapterError
 	require.ErrorAs(t, err, &adapterErr)
-	require.Equal(t, http.StatusServiceUnavailable, adapterErr.StatusCode, "missing endpoint should return 503, not 502")
+	require.Equal(t, http.StatusServiceUnavailable, adapterErr.StatusCode, "storage not configured should return 503")
 	require.Empty(t, storage.uploadedKeys, "no upload should be attempted when storage is not ready")
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,4 +155,66 @@ func TestImageTaskServiceCompleteOffloadFailureMarksFailed(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, got.HTTPStatus)
 	require.Contains(t, string(got.Error), "object storage")
 	require.NotContains(t, string(got.Result), "b64_json", "failed offload must not persist base64 to Redis")
+}
+
+// ─── H1: 新生图 key 不再使用 media/images/ 前缀 ───
+
+// TestImageAssetService_BuildUserUploadKey_NewFormat 验证 buildUserUploadKey 生成的 key
+// 不以 media/images/ 开头（否则会被 fullKey 误判为旧 key 而跳过 image-generation/ 前缀）。
+func TestImageAssetService_BuildUserUploadKey_NewFormat(t *testing.T) {
+	svc := &ImageAssetService{}
+	key := svc.buildUserUploadKey(42, "image/png")
+
+	require.False(t, strings.HasPrefix(key, "media/images/"),
+		"新 key 不得以 media/images/ 开头，否则 fullKey 会跳过 image-generation/ 前缀，got: %s", key)
+	require.True(t, strings.HasPrefix(key, "42/"),
+		"新 key 应以 {user_id}/ 开头，got: %s", key)
+	require.Contains(t, key, "/uploads/", "上传 key 应包含 /uploads/ 段")
+	require.True(t, strings.HasSuffix(key, ".png"), "png key 应以 .png 结尾")
+}
+
+// TestImageAssetService_IsOwnedByUser_AcceptsBothFormats 验证 isOwnedByUser 同时接受
+// 新格式（{user_id}/...）和旧格式（media/images/{user_id}/...），并拒绝其他用户目录。
+func TestImageAssetService_IsOwnedByUser_AcceptsBothFormats(t *testing.T) {
+	svc := &ImageAssetService{}
+
+	// 新格式：归属当前用户
+	require.True(t, svc.isOwnedByUser("42/2024/01/uploads/abc.png", 42))
+	// 旧格式：归属当前用户（数据库既有记录兼容）
+	require.True(t, svc.isOwnedByUser("media/images/42/2024/01/uploads/abc.png", 42))
+
+	// 新格式：归属其他用户
+	require.False(t, svc.isOwnedByUser("43/2024/01/uploads/abc.png", 42))
+	// 旧格式：归属其他用户
+	require.False(t, svc.isOwnedByUser("media/images/43/2024/01/uploads/abc.png", 42))
+
+	// 边界：用户 1 不应匹配用户 10 的目录（前缀 "1/" 不匹配 "10/"）
+	require.False(t, svc.isOwnedByUser("10/2024/01/uploads/abc.png", 1))
+	require.False(t, svc.isOwnedByUser("media/images/10/2024/01/uploads/abc.png", 1))
+	// 反向：用户 10 不应匹配用户 1 的目录
+	require.False(t, svc.isOwnedByUser("1/2024/01/uploads/abc.png", 10))
+
+	// 任意 key（无 user_id 段）应拒绝
+	require.False(t, svc.isOwnedByUser("random/key.png", 42))
+	require.False(t, svc.isOwnedByUser("", 42))
+}
+
+// TestImageGenerationService_BuildKeys_NewFormat 验证 buildOutputS3Key 和 BuildInputS3Key
+// 生成的 key 不以 media/images/ 开头。
+func TestImageGenerationService_BuildKeys_NewFormat(t *testing.T) {
+	svc := &ImageGenerationService{}
+
+	outputKey := svc.buildOutputS3Key(42, 1, 2, "image/jpeg")
+	require.False(t, strings.HasPrefix(outputKey, "media/images/"),
+		"输出 key 不得以 media/images/ 开头，got: %s", outputKey)
+	require.True(t, strings.HasPrefix(outputKey, "42/"), "输出 key 应以 {user_id}/ 开头")
+	require.Contains(t, outputKey, "/1/2/output/", "输出 key 应包含 conversation/generation/output 段")
+	require.True(t, strings.HasSuffix(outputKey, ".jpg"), "jpeg key 应以 .jpg 结尾")
+
+	inputKey := svc.BuildInputS3Key(42, "image/webp")
+	require.False(t, strings.HasPrefix(inputKey, "media/images/"),
+		"输入 key 不得以 media/images/ 开头，got: %s", inputKey)
+	require.True(t, strings.HasPrefix(inputKey, "42/"), "输入 key 应以 {user_id}/ 开头")
+	require.Contains(t, inputKey, "/uploads/", "输入 key 应包含 /uploads/ 段")
+	require.True(t, strings.HasSuffix(inputKey, ".webp"), "webp key 应以 .webp 结尾")
 }

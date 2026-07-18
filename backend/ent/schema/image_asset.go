@@ -14,7 +14,7 @@ import (
 // 数据库只保存 S3 Object Key 和元数据，不保存 Base64，也不保存短时 Presigned URL。
 //
 // 安全约束：
-//   - s3_key 必须校验属于当前用户目录（media/images/{user_id}/...）
+//   - s3_key 必须校验属于当前用户目录（新格式 {user_id}/... 或旧格式 media/images/{user_id}/...）
 //   - 同一次生成允许多个输入图片和多个输出图片
 type ImageAsset struct {
 	ent.Schema

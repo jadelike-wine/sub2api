@@ -8,6 +8,21 @@ export interface BackupS3Config {
   secret_access_key?: string
   prefix: string
   force_path_style: boolean
+  public_base_url: string
+  /** 该 bucket 的其他公开入口（r2.dev、其他 custom domain）；后端会逐一探测确认拒绝 backups/ */
+  additional_public_base_urls?: string[]
+  /**
+   * 管理员书面承诺 bucket 已私有化（HARD 前提）：
+   *   - 已禁用 R2 Public Development URL（*.r2.dev）
+   *   - 已移除或 Worker-protect 所有未受保护的 custom domain
+   *   - bucket 未启用任何公开读策略
+   *   - additional_public_base_urls 已完整列出所有剩余公开入口（如有）
+   *
+   * 当 public_base_url 非空时，后端强制要求此字段为 true 才能保存/测试。
+   * 此承诺弥补声明式列表的漏报盲区；真正可验证的边界由 verify-policy.mjs
+   * 通过 Cloudflare API 权威获取公开入口后逐一探测。
+   */
+  bucket_privacy_attested?: boolean
 }
 
 export interface BackupScheduleConfig {

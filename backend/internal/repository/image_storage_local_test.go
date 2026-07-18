@@ -18,9 +18,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
-// newTestConfig 构造一个用于测试的 *config.Config，支持 local 和 s3 两种驱动。
-// signingSecret 为空时使用默认测试密钥；s3Bucket 非空时模拟 s3 配置。
-func newTestConfig(localPath, driver, signingSecret, s3Bucket string) *config.Config {
+// newTestConfig 构造一个用于测试的 *config.Config，支持 local 驱动。
+// signingSecret 为空时使用默认测试密钥。
+func newTestConfig(localPath, driver, signingSecret string) *config.Config {
 	if signingSecret == "" {
 		signingSecret = "test-signing-secret-32bytes-min!!"
 	}
@@ -30,7 +30,6 @@ func newTestConfig(localPath, driver, signingSecret, s3Bucket string) *config.Co
 			LocalStoragePath:      localPath,
 			LocalURLPrefix:        "/api/media",
 			LocalURLSigningSecret: signingSecret,
-			S3Bucket:              s3Bucket,
 			PresignedURLExpires:   60,
 			LocalMinFreeSpaceMB:   1,
 			LocalMaxFileSizeMB:    10,
@@ -594,31 +593,18 @@ func TestLocalEnovaImageAssetStorage_ReceiveUpload(t *testing.T) {
 	}
 }
 
-func TestProvideEnovaImageAssetStorage_LocalAutoDetect(t *testing.T) {
-	// 测试无 S3Bucket 时自动选择 local
+func TestProvideEnovaImageAssetStorage_LocalExplicit(t *testing.T) {
+	// 测试 storage_driver=local 时选择 local 驱动（详细版本）
+	// 注意：更完整的测试见 image_generation_storage_test.go
 	tmpDir := t.TempDir()
-	cfg := newTestConfig(tmpDir, "", "", "")
-	// 不设置 S3Bucket，storage_driver 留空
+	cfg := newTestConfig(tmpDir, "local", "")
 
-	storage, err := ProvideEnovaImageAssetStorage(cfg)
+	// local 模式不使用 reader/factory，传 nil 即可
+	storage, err := ProvideEnovaImageAssetStorage(cfg, nil, nil)
 	if err != nil {
 		t.Fatalf("ProvideEnovaImageAssetStorage failed: %v", err)
 	}
 	if storage.Driver() != "local" {
-		t.Errorf("expected auto-detected driver 'local', got '%s'", storage.Driver())
-	}
-}
-
-func TestProvideEnovaImageAssetStorage_S3AutoDetect(t *testing.T) {
-	// 测试有 S3Bucket 时自动选择 s3（AWS SDK 凭据延迟解析，配置加载本身不会失败）
-	tmpDir := t.TempDir()
-	cfg := newTestConfig(tmpDir, "", "", "test-bucket")
-
-	storage, err := ProvideEnovaImageAssetStorage(cfg)
-	if err != nil {
-		t.Fatalf("ProvideEnovaImageAssetStorage failed: %v", err)
-	}
-	if storage.Driver() != "s3" {
-		t.Errorf("expected auto-detected driver 's3', got '%s'", storage.Driver())
+		t.Errorf("expected driver 'local', got '%s'", storage.Driver())
 	}
 }

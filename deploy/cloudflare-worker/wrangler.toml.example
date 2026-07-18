@@ -1,0 +1,35 @@
+# Cloudflare Worker 部署配置模板。
+# 复制为 wrangler.toml 并填入实际 bucket 名称与 account_id 后执行 `wrangler deploy`。
+#
+# 自定义域名（routes）需在 Cloudflare Dashboard 中已添加到该 zone。
+# 部署后，应用后台 S3 配置的 Public Base URL 应填入该自定义域名（如 https://cdn.example.com）。
+#
+# ⚠️ 部署前必读（详见 README.md "Hard Prerequisites"）：
+#   Worker 仅保护 routes 中列出的域名。R2 bucket 可通过多个公开入口访问，
+#   未受 Worker 保护的入口会绕过 backups/ 隔离。部署前必须完成：
+#     1. 禁用 R2 Public Development URL（*.r2.dev）—— Dashboard → R2 → bucket → Settings
+#     2. 移除或 Worker-protect 所有其他 custom domain（在下方 routes 中补充）
+#     3. 确保 bucket 无公开读策略，公开访问仅经此 Worker
+#   应用保存配置时还会强制要求勾选 BucketPrivacyAttested（HARD 前提）。
+#
+#   部署后运行权威验证脚本（通过 Cloudflare API 获取真实公开入口，不依赖人工声明）：
+#     CF_ACCOUNT_ID=... CF_API_TOKEN=... R2_BUCKET_NAME=... node verify-policy.mjs
+#   建议纳入 CI/定期巡检（每日 cron），任何失败立即告警。
+
+name = "r2-access-policy"
+main = "r2-access-policy.js"
+compatibility_date = "2024-09-01"
+account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"
+
+# 绑定 R2 bucket。bucket_name 填入应用 S3 配置中相同的 bucket。
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "your-shared-bucket-name"
+
+# 将自定义域名路由到此 Worker，使其成为该域名上所有请求的入口。
+# 填入绑定到该 R2 bucket 的公开自定义域名。
+# 若 bucket 绑定了多个 custom domain，全部列出，确保它们都受 Worker 保护。
+routes = [
+  { pattern = "cdn.example.com/*", zone_name = "example.com" },
+  # { pattern = "cdn2.example.com/*", zone_name = "example.com" },
+]

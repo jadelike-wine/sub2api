@@ -887,23 +887,28 @@ func (s *ImageGenerationService) isEnabled() bool {
 	return s.cfg.Enabled
 }
 
-// buildOutputS3Key 构造输出图片的 S3 Key。
-// 格式：media/images/{user_id}/{yyyy}/{mm}/{conversation_id}/{generation_id}/output/{uuid}.{ext}
+// buildOutputS3Key 构造输出图片的 S3 Key（相对 key，不含存储前缀）。
+// 格式：{user_id}/{yyyy}/{mm}/{conversation_id}/{generation_id}/output/{uuid}.{ext}
+// 存储层（fullKey）会自动叠加 image-generation/ 前缀。
+//
+// 不再使用 media/images/ 前缀：该前缀仅用于数据库中既有的旧记录兼容分支，
+// 新对象必须落在 image-generation/ 命名空间下，与 agnes-chat/、backups/ 隔离。
 func (s *ImageGenerationService) buildOutputS3Key(userID, conversationID, generationID int64, mimeType string) string {
 	now := time.Now()
 	ext := mimeTypeToExt(mimeType)
 	uuid := randomImageHex(8)
-	return fmt.Sprintf("media/images/%d/%04d/%02d/%d/%d/output/%s.%s",
+	return fmt.Sprintf("%d/%04d/%02d/%d/%d/output/%s.%s",
 		userID, now.Year(), int(now.Month()), conversationID, generationID, uuid, ext)
 }
 
-// BuildInputS3Key 构造用户上传输入图片的 S3 Key。
-// 格式：media/images/{user_id}/{yyyy}/{mm}/uploads/{uuid}.{ext}
+// BuildInputS3Key 构造用户上传输入图片的 S3 Key（相对 key，不含存储前缀）。
+// 格式：{user_id}/{yyyy}/{mm}/uploads/{uuid}.{ext}
+// 存储层（fullKey）会自动叠加 image-generation/ 前缀。
 func (s *ImageGenerationService) BuildInputS3Key(userID int64, mimeType string) string {
 	now := time.Now()
 	ext := mimeTypeToExt(mimeType)
 	uuid := randomImageHex(8)
-	return fmt.Sprintf("media/images/%d/%04d/%02d/uploads/%s.%s",
+	return fmt.Sprintf("%d/%04d/%02d/uploads/%s.%s",
 		userID, now.Year(), int(now.Month()), uuid, ext)
 }
 

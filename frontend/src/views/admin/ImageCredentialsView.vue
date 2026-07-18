@@ -72,6 +72,13 @@
         </div>
         <p v-if="!storageStatus?.configured" class="mt-3 text-xs text-gray-400 dark:text-dark-500">
           {{ t('admin.imageCredentials.storage.hint') }}
+          <router-link
+            v-if="storageStatus?.driver === 's3'"
+            to="/admin/settings?tab=backup"
+            class="ml-1 text-primary-600 underline hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+          >
+            {{ t('admin.imageCredentials.storage.goToBackupConfig') }}
+          </router-link>
         </p>
       </section>
 

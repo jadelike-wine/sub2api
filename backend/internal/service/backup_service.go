@@ -1,12 +1,14 @@
 package service
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +21,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
 const (
@@ -27,6 +30,18 @@ const (
 	settingKeyBackupRecords  = "backup_records"
 
 	maxBackupRecords = 100
+
+	// AgnesChatPrefix 是 Agnes 多模态聊天图片在公共对象存储中的 key 前缀。
+	// 与数据库备份（Prefix 字段控制，默认 "backups"）隔离，避免互相覆盖。
+	AgnesChatPrefix = "agnes-chat"
+
+	// ImageGenerationPrefix 是 AI 生图资产在公共对象存储中的 key 前缀。
+	// 与 Agnes 聊天图片（agnes-chat/）和数据库备份（backups/）隔离。
+	ImageGenerationPrefix = "image-generation"
+
+	// backupProbeTimeout 是 PublicBaseURL backups/ 公开性探测的单次 HTTP 超时。
+	// 短超时避免阻塞保存操作；CDN 不可达时 fail-closed 拒绝保存。
+	backupProbeTimeout = 5 * time.Second
 )
 
 var (
@@ -36,6 +51,20 @@ var (
 	ErrRestoreInProgress     = infraerrors.Conflict("RESTORE_IN_PROGRESS", "a restore is already in progress")
 	ErrBackupRecordsCorrupt  = infraerrors.InternalServer("BACKUP_RECORDS_CORRUPT", "backup records data is corrupted")
 	ErrBackupS3ConfigCorrupt = infraerrors.InternalServer("BACKUP_S3_CONFIG_CORRUPT", "backup S3 config data is corrupted")
+
+	// ErrBackupPrefixPubliclyReadable 表示 PublicBaseURL 指向的域名允许匿名读取 backups/ 前缀，
+	// 数据库备份将公开暴露。UpdateS3Config 会通过探测拒绝保存此类配置（fail-closed）。
+	// 部署 deploy/cloudflare-worker/r2-access-policy.js 或移除 PublicBaseURL 可解决。
+	ErrBackupPrefixPubliclyReadable = infraerrors.BadRequest("BACKUP_PREFIX_PUBLICLY_READABLE", "backups/ prefix is publicly readable via PublicBaseURL")
+
+	// ErrBucketPrivacyNotAttested 表示管理员未勾选 bucket 私有化承诺。
+	// PublicBaseURL 非空时，管理员必须显式承诺：
+	//   - 已禁用 R2 Public Development URL（*.r2.dev）
+	//   - 已移除或 Worker-protect 所有未受保护的 custom domain
+	//   - bucket 未启用任何公开读策略
+	// 后端无法直接读取 Cloudflare 控制台配置；声明式 AdditionalPublicBaseURLs 也可能漏报。
+	// 此承诺是 HARD 前提，真正可验证的边界由 verify-policy.mjs（Cloudflare API 权威获取）提供。
+	ErrBucketPrivacyNotAttested = infraerrors.BadRequest("BUCKET_PRIVACY_NOT_ATTESTED", "bucket privacy attestation is required when PublicBaseURL is set")
 )
 
 // ─── 接口定义 ───
@@ -60,21 +89,60 @@ type BackupObjectStoreFactory func(ctx context.Context, cfg *BackupS3Config) (Ba
 
 // ─── 数据模型 ───
 
-// BackupS3Config S3 兼容存储配置（支持 Cloudflare R2）
+// BackupS3Config 是系统公共对象存储配置（S3 兼容，支持 Cloudflare R2）。
+// 同时用于数据库备份和 Agnes 多模态图片存储。
 type BackupS3Config struct {
 	Endpoint        string `json:"endpoint"` // e.g. https://<account_id>.r2.cloudflarestorage.com
 	Region          string `json:"region"`   // R2 用 "auto"
 	Bucket          string `json:"bucket"`
 	AccessKeyID     string `json:"access_key_id"`
 	SecretAccessKey string `json:"secret_access_key,omitempty"` //nolint:revive // field name follows AWS convention
-	Prefix          string `json:"prefix"`                      // S3 key 前缀，如 "backups/"
+	Prefix          string `json:"prefix"` // 数据库备份 key 前缀，如 "backups"（Agnes 图片前缀固定为 AgnesChatPrefix）
 	ForcePathStyle  bool   `json:"force_path_style"`
+	PublicBaseURL   string `json:"public_base_url"` // 公开桶/CDN 域名；Agnes 图片生成 HTTPS 直链时使用
+	// AdditionalPublicBaseURLs 声明该 bucket 的其他公开访问入口（r2.dev Public Development URL、
+	// 其他 custom domain 等）。探测会验证所有这些 URL 同样拒绝 backups/ 前缀的匿名访问。
+	//
+	// ⚠️ 这是 SECONDARY 纵深防御，不是主要安全边界。
+	// 管理员可能漏报公开入口，后端无法发现未声明的域名。真正的强制边界是：
+	//   1. BucketPrivacyAttested（HARD 前提，见下）——管理员书面承诺已私有化 bucket
+	//   2. deploy/cloudflare-worker/verify-policy.mjs——通过 Cloudflare API 权威获取
+	//      r2.dev 状态和 custom domain 列表后逐一探测，不依赖人工声明
+	// 推荐做法：在 Cloudflare 控制台禁用 r2.dev、移除未受 Worker 保护的 custom domain，
+	// 此时此字段留空即可。
+	AdditionalPublicBaseURLs []string `json:"additional_public_base_urls,omitempty"`
+
+	// BucketPrivacyAttested 是管理员的硬性运维承诺（HARD 前提）：
+	//   - R2 Public Development URL（*.r2.dev）已禁用
+	//   - 所有 custom domain 已移除，或已路由到受 r2-access-policy.js 保护的 Worker
+	//   - bucket 未启用任何公开读策略
+	//   - AdditionalPublicBaseURLs 已完整列出所有剩余公开入口（如有）
+	//
+	// 当 PublicBaseURL 非空时，UpdateS3Config/TestS3Connection 强制要求此字段为 true，
+	// 否则拒绝保存/测试。这是声明式安全机制无法关闭 bucket 级公开风险的弥补：
+	// 后端无法直接读取 Cloudflare 控制台配置，只能依赖管理员书面承诺。
+	//
+	// 真正的可验证边界由 deploy/cloudflare-worker/verify-policy.mjs 提供——
+	// 该脚本通过 Cloudflare API 权威获取所有公开入口并逐一探测，应纳入 CI/定期巡检。
+	BucketPrivacyAttested bool `json:"bucket_privacy_attested,omitempty"`
 }
 
 // IsConfigured 检查必要字段是否已配置
 func (c *BackupS3Config) IsConfigured() bool {
 	return c.Bucket != "" && c.AccessKeyID != "" && c.SecretAccessKey != ""
 }
+
+// SharedObjectStorageConfigReader 从数据库读取公共对象存储配置（解密后）。
+// 由 BackupService 实现，供 Agnes 图片存储等模块使用，避免业务代码直接查询 settings 表。
+type SharedObjectStorageConfigReader interface {
+	// GetSharedObjectStorageConfig 返回解密后的公共 S3/R2 配置。
+	// 返回 nil, nil 表示尚未配置（调用方应据此返回明确错误，不静默回退）。
+	GetSharedObjectStorageConfig(ctx context.Context) (*BackupS3Config, error)
+}
+
+// EnovaImageAssetStorageFactory 根据配置构造 EnovaImageAssetStorage。
+// 由 repository 层实现（包装 NewS3EnovaImageAssetStorage），通过 wire 注入到 service 层。
+type EnovaImageAssetStorageFactory func(EnovaImageAssetStorageConfig) (EnovaImageAssetStorage, error)
 
 // BackupScheduleConfig 定时备份配置
 type BackupScheduleConfig struct {
@@ -103,6 +171,12 @@ type BackupRecord struct {
 	RestoredAt    string `json:"restored_at,omitempty"`
 }
 
+// httpProbeDoer 是 backup 前缀公开性探测的 HTTP 客户端抽象。
+// 默认使用 http.DefaultClient；测试中可注入 mock 以验证探测逻辑（避免真实网络）。
+type httpProbeDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 // BackupService 数据库备份恢复服务
 type BackupService struct {
 	settingRepo  SettingRepository
@@ -115,9 +189,10 @@ type BackupService struct {
 	backingUp bool
 	restoring bool
 
-	storeMu sync.Mutex // 保护 store/s3Cfg 缓存
-	store   BackupObjectStore
-	s3Cfg   *BackupS3Config
+	storeMu   sync.Mutex // 保护 store/s3Cfg/storeSig 缓存
+	store     BackupObjectStore
+	s3Cfg     *BackupS3Config
+	storeSig  string // 配置指纹，用于多实例下检测配置变更并重建客户端
 
 	recordsMu sync.Mutex // 保护 records 的 load/save 操作
 
@@ -129,6 +204,8 @@ type BackupService struct {
 	shuttingDown atomic.Bool        // 阻止新备份启动
 	bgCtx        context.Context    // 所有后台操作的 parent context
 	bgCancel     context.CancelFunc // 取消所有活跃后台操作
+
+	probeDoer httpProbeDoer // PublicBaseURL 前缀公开性探测客户端（默认 http.DefaultClient）
 }
 
 func NewBackupService(
@@ -147,6 +224,7 @@ func NewBackupService(
 		dumper:       dumper,
 		bgCtx:        bgCtx,
 		bgCancel:     bgCancel,
+		probeDoer:    newBackupProbeHTTPClient(),
 	}
 }
 
@@ -249,20 +327,76 @@ func (s *BackupService) GetS3Config(ctx context.Context) (*BackupS3Config, error
 	return cfg, nil
 }
 
+// GetSharedObjectStorageConfig 实现 SharedObjectStorageConfigReader 接口。
+// 返回解密后的完整配置（含 SecretAccessKey），供 Agnes 图片存储等模块构造 S3 客户端。
+// 返回 nil, nil 表示尚未配置——调用方应据此返回明确错误，不静默回退到环境变量。
+func (s *BackupService) GetSharedObjectStorageConfig(ctx context.Context) (*BackupS3Config, error) {
+	cfg, err := s.loadS3Config(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil || !cfg.IsConfigured() {
+		return nil, nil
+	}
+	return cfg, nil
+}
+
 func (s *BackupService) UpdateS3Config(ctx context.Context, cfg BackupS3Config) (*BackupS3Config, error) {
-	// 如果没提供 secret，保留原有值
+	// 强制规范化备份前缀：固定为 "backups"，防止跨前缀写入或根目录写入。
+	// Agnes 图片使用 agnes-chat/，AI 生图使用 image-generation/，均由常量固定，不由此配置控制。
+	cfg.Prefix = normalizeBackupPrefix(cfg.Prefix)
+
+	// 加载旧配置（用于保留原 SecretAccessKey 密文）。
+	// 必须传播读取错误：若 settings 暂时故障或 JSON 损坏，old 为 nil 且 err 非 nil，
+	// 此时若管理员留空 Secret 修改其他字段，会保存一个没有 Secret 的新配置，
+	// 覆盖已存在的凭证，使备份/Agnes/生图三条共享存储链路同时不可用。
+	old, err := s.loadS3ConfigRaw(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load previous s3 config: %w", err)
+	}
+
 	if cfg.SecretAccessKey == "" {
-		old, _ := s.loadS3Config(ctx)
+		// 编辑时留空：保留旧密文，避免解密后再以明文写回（防止明文泄露）。
+		// old == nil 表示此前未配置过（首次配置分两步填写的场景），允许空 Secret 保存。
 		if old != nil {
 			cfg.SecretAccessKey = old.SecretAccessKey
 		}
 	} else {
-		// 加密 SecretAccessKey
+		// 提供了新 secret：加密后保存
 		encrypted, err := s.encryptor.Encrypt(cfg.SecretAccessKey)
 		if err != nil {
 			return nil, fmt.Errorf("encrypt secret: %w", err)
 		}
 		cfg.SecretAccessKey = encrypted
+	}
+
+	// PublicBaseURL 安全边界验证（fail-closed）：
+	// 随机路径/日志/UI 警告都不能阻止 R2 custom domain / public bucket 的匿名读取。
+	// 此处通过探测 backups/.policy-probe-<uuid> 验证 CDN/Worker 策略是否拒绝 backups/ 前缀：
+	//   - 403：策略生效（Worker 已部署或 bucket 私有）→ 允许保存
+	//   - 404：backups/ 公开可读 → 拒绝保存，要求先部署 deploy/cloudflare-worker/r2-access-policy.js
+	//   - 网络错误：fail-closed 拒绝保存（旧 warn-only 会允许未验证的公开配置）
+	//
+	// 必须探测所有公开入口（PublicBaseURL + AdditionalPublicBaseURLs）：
+	// Worker 仅保护 PublicBaseURL 这一路由，r2.dev Public Development URL 或未受保护的
+	// custom domain 可绕过。管理员必须声明所有公开入口，后端逐一验证策略生效；
+	// 或在 Cloudflare 控制台禁用这些入口（推荐，此时 AdditionalPublicBaseURLs 留空）。
+	//
+	// ⚠️ 声明式列表是 SECONDARY 纵深防御——管理员可能漏报。HARD 前提是 BucketPrivacyAttested
+	// （管理员书面承诺 bucket 已私有化），真正可验证的边界由 verify-policy.mjs 通过
+	// Cloudflare API 权威获取公开入口后逐一探测。
+	if cfg.PublicBaseURL != "" && !cfg.BucketPrivacyAttested {
+		return nil, ErrBucketPrivacyNotAttested
+	}
+	publicURLs := []string{cfg.PublicBaseURL}
+	publicURLs = append(publicURLs, cfg.AdditionalPublicBaseURLs...)
+	for _, u := range publicURLs {
+		if u == "" {
+			continue
+		}
+		if err := s.verifyBackupPrefixNotPublic(ctx, u); err != nil {
+			return nil, fmt.Errorf("verify public url %q: %w", u, err)
+		}
 	}
 
 	data, err := json.Marshal(cfg)
@@ -273,20 +407,188 @@ func (s *BackupService) UpdateS3Config(ctx context.Context, cfg BackupS3Config) 
 		return nil, fmt.Errorf("save s3 config: %w", err)
 	}
 
-	// 清除缓存的 S3 客户端
+	// 清除缓存的 S3 客户端（本实例）
 	s.storeMu.Lock()
 	s.store = nil
 	s.s3Cfg = nil
+	s.storeSig = ""
 	s.storeMu.Unlock()
 
 	cfg.SecretAccessKey = ""
 	return &cfg, nil
 }
 
+// loadS3ConfigRaw 从数据库加载原始配置（不解密 SecretAccessKey）。
+// 用于 UpdateS3Config 保留原密文，避免解密→明文回写。
+//
+// 错误语义：
+//   - settings repository 读取失败（如 DB 暂时不可用）：返回 (nil, err)，
+//     调用方必须传播此错误，否则会在留空 Secret 编辑其他字段时静默覆盖既有凭证。
+//   - raw == ""（尚未配置）：返回 (nil, nil)，表示首次配置场景。
+//   - JSON 损坏：返回 (nil, ErrBackupS3ConfigCorrupt)。
+func (s *BackupService) loadS3ConfigRaw(ctx context.Context) (*BackupS3Config, error) {
+	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupS3Config)
+	if err != nil {
+		return nil, fmt.Errorf("read backup s3 config: %w", err)
+	}
+	if raw == "" {
+		return nil, nil //nolint:nilnil // 尚未配置是合法状态
+	}
+	var cfg BackupS3Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return nil, ErrBackupS3ConfigCorrupt
+	}
+	return &cfg, nil
+}
+
+// verifyBackupPrefixNotPublic 探测 PublicBaseURL 指向的域名是否允许匿名读取 backups/ 前缀。
+//
+// 这是 PublicBaseURL 场景下 backups/ 隔离的可验证安全边界：随机路径/日志/UI 警告都不能
+// 阻止 R2 custom domain / public bucket 的匿名读取，只有 CDN/Worker 层的访问控制可以。
+//
+// SSRF 防护（复用项目已有逻辑）：
+//   - 仅允许 HTTPS（urlvalidator.ValidateHTTPSURL）
+//   - 拒绝 localhost / 私网 IP 字面量 / 云元数据 hostname（isBlockedHostname + urlvalidator）
+//   - 传输层 safeDialContext 防止 DNS rebinding（dial 时再次校验解析 IP）
+//   - 禁止重定向（CheckRedirect 返回 ErrUseLastResponse），防止重定向到内网
+//   - 短超时（backupProbeTimeout），避免无限阻塞保存操作
+//
+// 探测方法：GET（带 Range: bytes=0-0）而非 HEAD。
+// 某些 CDN/WAF 对 HEAD 返回 403 但允许 GET 回源，仅验证 HEAD 不能证明匿名 GET 被拒绝。
+//
+// 响应判定（fail-closed）：
+//   - 403/401：访问被拒绝（Worker 已部署或 bucket 私有）→ 安全，返回 nil
+//   - 404：访问被允许但 key 不存在 → DANGER：backups/ 公开可读
+//   - 200/206：内容被返回（探测 key 不应命中真实对象）→ DANGER
+//   - 3xx/5xx/其他：无法确认策略生效 → DANGER（fail-closed）
+//   - 网络错误：CDN 不可达 → DANGER（fail-closed，不允许多 Saving 未验证的公开配置）
+//
+// 探测 key 使用 backups/.policy-probe-<uuid>，不会匹配任何真实备份
+// （真实备份为 backups/{date}/{uuid}/{filename}）。
+func (s *BackupService) verifyBackupPrefixNotPublic(ctx context.Context, publicBaseURL string) error {
+	base := strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")
+	if base == "" {
+		return nil // 未配置 PublicBaseURL，无需探测
+	}
+
+	// ── SSRF 防护：URL 格式 + scheme + host 校验 ──
+	// ValidateHTTPSURL 强制 HTTPS、拒绝 localhost/私网 IP 字面量；
+	// 额外用 isBlockedHostname 拒绝云元数据 hostname（metadata.google.internal 等）。
+	validated, err := urlvalidator.ValidateHTTPSURL(base, urlvalidator.ValidationOptions{
+		AllowPrivate: false,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: invalid public base url (must be HTTPS, public host, no private IP): %v",
+			ErrBackupPrefixPubliclyReadable, err)
+	}
+	// 额外校验：提取 hostname 检查云元数据黑名单（urlvalidator 不覆盖）
+	if u, perr := http.NewRequest(http.MethodGet, validated, nil); perr == nil {
+		if isBlockedHostname(u.URL.Hostname()) {
+			return fmt.Errorf("%w: hostname %q is blocked (cloud metadata / localhost)",
+				ErrBackupPrefixPubliclyReadable, u.URL.Hostname())
+		}
+	}
+
+	// ── 构造探测请求：GET + Range（而非 HEAD）──
+	probeKey := "backups/.policy-probe-" + uuid.NewString()
+	probeURL := validated + "/" + probeKey
+
+	doer := s.probeDoer
+	if doer == nil {
+		doer = newBackupProbeHTTPClient()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+	if err != nil {
+		return fmt.Errorf("%w: construct probe request: %v", ErrBackupPrefixPubliclyReadable, err)
+	}
+	// Range: bytes=0-0 限制响应体大小；某些 CDN 对 HEAD 返回 403 但允许 GET，
+	// 必须用 GET 才能验证匿名读取是否真的被拒绝。
+	req.Header.Set("Range", "bytes=0-0")
+
+	resp, err := doer.Do(req)
+	if err != nil {
+		// 网络不可达（域名未解析、CDN 未配置、连接超时）→ fail-closed 拒绝保存。
+		// 旧实现 warn-only 放行：若 CDN 暂不可达但稍后解析到公开 bucket，备份仍会公开。
+		// 管理员须确保 CDN 域名可达且 Worker 已部署后再保存配置。
+		return fmt.Errorf("%w: cannot reach PublicBaseURL to verify backups/ policy (%v) — "+
+			"ensure the CDN domain is reachable and deploy/cloudflare-worker/r2-access-policy.js is deployed to deny backups/",
+			ErrBackupPrefixPubliclyReadable, err)
+	}
+	defer resp.Body.Close()
+	// 排空并限制 body 读取，防止恶意服务端通过 body 拖垮探测
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+
+	switch {
+	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized:
+		// 访问被明确拒绝——策略生效（Worker 或私有 bucket）
+		return nil
+	case resp.StatusCode == http.StatusNotFound:
+		// 404 表示访问被允许但 key 不存在：backups/ 公开可读
+		return fmt.Errorf("%w: probe %s returned 404 (anonymous access allowed, key missing) — "+
+			"deploy deploy/cloudflare-worker/r2-access-policy.js to deny backups/, or remove PublicBaseURL and use presigned URLs",
+			ErrBackupPrefixPubliclyReadable, probeURL)
+	case resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent:
+		// 200/206：内容被返回（探测 key 不应命中真实对象，命中说明 bucket 完全公开）
+		return fmt.Errorf("%w: probe %s returned status %d (content served) — "+
+			"backups/ is publicly readable; deploy CDN policy or remove PublicBaseURL",
+			ErrBackupPrefixPubliclyReadable, probeURL, resp.StatusCode)
+	default:
+		// 3xx/5xx/其他：无法确认策略生效，视为危险（fail-closed）
+		return fmt.Errorf("%w: probe %s returned unexpected status %d — "+
+			"cannot verify backups/ is not publicly readable; deploy CDN policy or remove PublicBaseURL",
+			ErrBackupPrefixPubliclyReadable, probeURL, resp.StatusCode)
+	}
+}
+
+// newBackupProbeHTTPClient 构造 PublicBaseURL 探测专用的 SSRF 安全 HTTP 客户端。
+//
+// 安全特性：
+//   - safeDialContext：dial 时校验解析 IP，防止 DNS rebinding 到私网（复用 channel_monitor_ssrf.go）
+//   - CheckRedirect：禁止跟随重定向，防止重定向到内网地址
+//   - Timeout：backupProbeTimeout（5s），避免无限阻塞保存操作
+//
+// 测试中通过注入 probeDoer mock 绕过此客户端，直接模拟响应。
+func newBackupProbeHTTPClient() *http.Client {
+	tr := &http.Transport{
+		DialContext:       safeDialContext,
+		ForceAttemptHTTP2: true,
+		MaxIdleConns:      2,
+	}
+	return &http.Client{
+		Timeout: backupProbeTimeout,
+		Transport: tr,
+		// 禁止重定向：探测不应跟随 3xx，防止重定向到内网或绕过校验。
+		// 返回 ErrUseLastResponse 使客户端返回首条响应（含 3xx 状态码）供上层判定。
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// normalizeBackupPrefix 强制规范化备份前缀为 "backups"。
+//
+// 这是前缀隔离的硬性边界保护：无论管理员如何配置，备份只使用 backups/ 前缀，
+// 与 Agnes 图片（agnes-chat/）和 AI 生图（image-generation/）严格隔离。
+//
+// 早期实现仅拒绝与图片前缀完全相等的值，仍接受 agnes-chat/foo、image-generation/foo
+// 或任意自定义值，导致备份可写入图片命名空间。现改为无条件返回 "backups"，
+// Prefix 字段不再可配置（前端应展示为只读）。
+func normalizeBackupPrefix(prefix string) string {
+	_ = prefix
+	return "backups"
+}
+
 func (s *BackupService) TestS3Connection(ctx context.Context, cfg BackupS3Config) error {
-	// 如果没提供 secret，用已保存的
+	// 强制规范化前缀，避免测试对象写入图片命名空间或根目录
+	cfg.Prefix = normalizeBackupPrefix(cfg.Prefix)
+
+	// 如果没提供 secret，用已保存的（传播读取错误，避免故障下使用空 Secret 测试）
 	if cfg.SecretAccessKey == "" {
-		old, _ := s.loadS3Config(ctx)
+		old, err := s.loadS3Config(ctx)
+		if err != nil {
+			return fmt.Errorf("load saved s3 config: %w", err)
+		}
 		if old != nil {
 			cfg.SecretAccessKey = old.SecretAccessKey
 		}
@@ -300,7 +602,70 @@ func (s *BackupService) TestS3Connection(ctx context.Context, cfg BackupS3Config
 	if err != nil {
 		return err
 	}
-	return store.HeadBucket(ctx)
+
+	// 1. 验证 bucket 可访问
+	if err := store.HeadBucket(ctx); err != nil {
+		return fmt.Errorf("bucket not accessible: %w", err)
+	}
+
+	// 2. 验证上传权限：写入一个临时测试对象（强制位于 backups/ 前缀下）
+	testKey := fmt.Sprintf("%s/.s3-connection-test/%d-%d",
+		cfg.Prefix, time.Now().UnixNano(), time.Now().UnixNano()%1000)
+	testBody := []byte("s3 connection test")
+	if _, err := store.Upload(ctx, testKey, bytes.NewReader(testBody), "text/plain"); err != nil {
+		return fmt.Errorf("upload test object failed (permission denied?): %w", err)
+	}
+
+	// 3. 验证读取权限
+	reader, err := store.Download(ctx, testKey)
+	if err != nil {
+		// 清理失败时记录日志但不掩盖原始错误
+		if delErr := store.Delete(ctx, testKey); delErr != nil {
+			logger.LegacyPrintf("service.backup", "[Backup] TestS3Connection: cleanup failed after download error: %v (test key: %s)", delErr, testKey)
+		}
+		return fmt.Errorf("download test object failed (read permission denied?): %w", err)
+	}
+	downloaded, readErr := io.ReadAll(reader)
+	_ = reader.Close()
+	if readErr != nil {
+		if delErr := store.Delete(ctx, testKey); delErr != nil {
+			logger.LegacyPrintf("service.backup", "[Backup] TestS3Connection: cleanup failed after read error: %v (test key: %s)", delErr, testKey)
+		}
+		return fmt.Errorf("read test object failed: %w", readErr)
+	}
+	if !bytes.Equal(downloaded, testBody) {
+		if delErr := store.Delete(ctx, testKey); delErr != nil {
+			logger.LegacyPrintf("service.backup", "[Backup] TestS3Connection: cleanup failed after content mismatch: %v (test key: %s)", delErr, testKey)
+		}
+		return fmt.Errorf("test object content mismatch: uploaded %d bytes, downloaded %d bytes", len(testBody), len(downloaded))
+	}
+
+	// 4. 验证删除权限
+	if err := store.Delete(ctx, testKey); err != nil {
+		return fmt.Errorf("delete test object failed (delete permission denied?): %w", err)
+	}
+
+	// 5. 验证所有公开入口的 backups/ 访问策略（CDN/Worker 边界）
+	// S3 凭证与 bucket 权限正确，不代表公开域名安全。若任一公开入口允许匿名读取 backups/，
+	// 数据库备份将公开暴露。必须探测 PublicBaseURL + AdditionalPublicBaseURLs 全部入口，
+	// 避免 r2.dev / 未受 Worker 保护的 custom domain 绕过。
+	//
+	// ⚠️ 同 UpdateS3Config：声明式列表是 SECONDARY 防御，HARD 前提是 BucketPrivacyAttested。
+	if cfg.PublicBaseURL != "" && !cfg.BucketPrivacyAttested {
+		return ErrBucketPrivacyNotAttested
+	}
+	publicURLs := []string{cfg.PublicBaseURL}
+	publicURLs = append(publicURLs, cfg.AdditionalPublicBaseURLs...)
+	for _, u := range publicURLs {
+		if u == "" {
+			continue
+		}
+		if err := s.verifyBackupPrefixNotPublic(ctx, u); err != nil {
+			return fmt.Errorf("verify public url %q: %w", u, err)
+		}
+	}
+
+	return nil
 }
 
 // ─── 定时备份管理 ───
@@ -918,11 +1283,18 @@ func (s *BackupService) DeleteBackup(ctx context.Context, backupID string) error
 
 	// 从 S3 删除
 	if found.S3Key != "" && found.Status == "completed" {
-		s3Cfg, err := s.loadS3Config(ctx)
-		if err == nil && s3Cfg != nil && s3Cfg.IsConfigured() {
-			objectStore, err := s.getOrCreateStore(ctx, s3Cfg)
-			if err == nil {
-				_ = objectStore.Delete(ctx, found.S3Key)
+		// 安全检查：验证 key 位于 backups/ 前缀下，防止跨前缀误删
+		if err := assertBackupKeyPrefix(found.S3Key); err != nil {
+			logger.LegacyPrintf("service.backup", "[Backup] refused to delete key outside backup prefix: %s (backup: %s)", found.S3Key, backupID)
+		} else {
+			s3Cfg, err := s.loadS3Config(ctx)
+			if err == nil && s3Cfg != nil && s3Cfg.IsConfigured() {
+				objectStore, err := s.getOrCreateStore(ctx, s3Cfg)
+				if err == nil {
+					if delErr := objectStore.Delete(ctx, found.S3Key); delErr != nil {
+						logger.LegacyPrintf("service.backup", "[Backup] failed to delete S3 object %s: %v", found.S3Key, delErr)
+					}
+				}
 			}
 		}
 	}
@@ -960,7 +1332,10 @@ func (s *BackupService) GetBackupDownloadURL(ctx context.Context, backupID strin
 
 func (s *BackupService) loadS3Config(ctx context.Context) (*BackupS3Config, error) {
 	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupS3Config)
-	if err != nil || raw == "" {
+	if err != nil {
+		return nil, fmt.Errorf("read backup s3 config: %w", err)
+	}
+	if raw == "" {
 		return nil, nil //nolint:nilnil // no config is a valid state
 	}
 	var cfg BackupS3Config
@@ -981,15 +1356,20 @@ func (s *BackupService) loadS3Config(ctx context.Context) (*BackupS3Config, erro
 }
 
 func (s *BackupService) getOrCreateStore(ctx context.Context, cfg *BackupS3Config) (BackupObjectStore, error) {
+	if cfg == nil {
+		return nil, ErrBackupS3NotConfigured
+	}
+
+	sig := backupConfigSignature(cfg)
+
 	s.storeMu.Lock()
 	defer s.storeMu.Unlock()
 
-	if s.store != nil && s.s3Cfg != nil {
+	// 配置指纹比对：本实例若已缓存客户端且配置未变，则复用；否则重建。
+	// 注意：多实例下其他实例不会收到本实例的缓存失效信号，因此指纹比对是必要的——
+	// 每次调用都会从数据库重新加载配置（通过 loadS3Config），签名变化时自动重建。
+	if s.store != nil && s.s3Cfg != nil && s.storeSig == sig {
 		return s.store, nil
-	}
-
-	if cfg == nil {
-		return nil, ErrBackupS3NotConfigured
 	}
 
 	store, err := s.storeFactory(ctx, cfg)
@@ -998,15 +1378,42 @@ func (s *BackupService) getOrCreateStore(ctx context.Context, cfg *BackupS3Confi
 	}
 	s.store = store
 	s.s3Cfg = cfg
+	s.storeSig = sig
 	return store, nil
 }
 
-func (s *BackupService) buildS3Key(cfg *BackupS3Config, fileName string) string {
-	prefix := strings.TrimRight(cfg.Prefix, "/")
-	if prefix == "" {
-		prefix = "backups"
+// backupConfigSignature 计算备份 S3 配置指纹，用于检测配置变更。
+// 包含所有影响 S3 客户端构造的字段（含 SecretAccessKey）。
+func backupConfigSignature(cfg *BackupS3Config) string {
+	if cfg == nil {
+		return ""
 	}
-	return fmt.Sprintf("%s/%s/%s", prefix, time.Now().Format("2006/01/02"), fileName)
+	return fmt.Sprintf("%s|%s|%s|%s|%s|%v",
+		cfg.Endpoint, cfg.Region, cfg.Bucket,
+		cfg.AccessKeyID, cfg.SecretAccessKey,
+		cfg.ForcePathStyle,
+	)
+}
+
+func (s *BackupService) buildS3Key(cfg *BackupS3Config, fileName string) string {
+	// 强制规范化：无论 cfg.Prefix 是什么，备份 key 必定以 backups/ 开头
+	prefix := normalizeBackupPrefix(cfg.Prefix)
+	// 插入随机目录段使备份路径不可预测，作为 PublicBaseURL 公开桶场景下的纵深防御：
+	// 即使 bucket 通过 R2 custom domain 公开，攻击者也无法枚举/猜测 backups/ 下的对象路径
+	// （文件名本身含可预测的 {dbname}_{timestamp}，单纯依赖路径保密并不可靠，
+	// 但随机段使批量扫描不可行）。真正的安全边界仍需在 CDN/Worker 层显式拒绝 backups/。
+	return fmt.Sprintf("%s/%s/%s/%s", prefix, time.Now().Format("2006/01/02"), uuid.NewString(), fileName)
+}
+
+// assertBackupKeyPrefix 验证 S3 key 位于 backups/ 前缀下，防止跨前缀误删。
+// 用于 DeleteBackup 和 cleanupOldBackups 的安全检查。
+func assertBackupKeyPrefix(key string) error {
+	normalized := normalizeBackupPrefix("") // "backups"
+	expected := normalized + "/"
+	if !strings.HasPrefix(key, expected) {
+		return fmt.Errorf("refused to delete key outside backup prefix: %s (expected prefix: %s)", key, expected)
+	}
+	return nil
 }
 
 // loadRecords 加载备份记录，区分"无数据"和"数据损坏"
@@ -1125,6 +1532,11 @@ func (s *BackupService) cleanupOldBackups(ctx context.Context, schedule *BackupS
 }
 
 func (s *BackupService) deleteS3Object(ctx context.Context, key string) error {
+	// 安全检查：验证 key 位于 backups/ 前缀下，防止跨前缀误删
+	if err := assertBackupKeyPrefix(key); err != nil {
+		logger.LegacyPrintf("service.backup", "[Backup] refused to delete key outside backup prefix: %s", key)
+		return err
+	}
 	s3Cfg, err := s.loadS3Config(ctx)
 	if err != nil || s3Cfg == nil {
 		return nil

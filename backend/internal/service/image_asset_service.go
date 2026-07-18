@@ -50,12 +50,12 @@ type PresignUploadResponse struct {
 // PresignUpload 生成用户直传 S3 的预签名 PUT URL。
 //
 // 安全：
-//   - S3 Key 必须位于当前用户目录（media/images/{user_id}/...）
+//   - S3 Key 必须位于当前用户目录（{user_id}/...，存储层再叠加 image-generation/ 前缀）
 //   - Content-Type 必须是允许的图片类型
 //   - URL 短期有效（10-30 分钟）
 func (s *ImageAssetService) PresignUpload(ctx context.Context, userID int64, req PresignUploadRequest) (*PresignUploadResponse, error) {
 	if !s.storage.Configured() {
-		return nil, errStorageNotConfigured
+		return nil, ErrStorageNotConfigured
 	}
 	mime := strings.ToLower(strings.TrimSpace(req.MimeType))
 	if !isAllowedImageMime(mime) {
@@ -88,7 +88,7 @@ type ConfirmUploadRequest struct {
 // ConfirmUpload 校验用户上传的 S3 对象并创建资产记录。
 //
 // 校验项：
-//   - S3 Key 必须位于当前用户目录
+//   - S3 Key 必须位于当前用户目录（{user_id}/... 或旧 media/images/{user_id}/... 兼容格式）
 //   - 对象必须存在（Head）
 //   - Content-Type 必须是允许的图片类型
 //   - 文件大小不超过限制
@@ -97,7 +97,7 @@ type ConfirmUploadRequest struct {
 // 创建生成任务时，通过 input_asset_ids 引用这些资产。
 func (s *ImageAssetService) ConfirmUpload(ctx context.Context, userID int64, req ConfirmUploadRequest) (*ImageAsset, error) {
 	if !s.storage.Configured() {
-		return nil, errStorageNotConfigured
+		return nil, ErrStorageNotConfigured
 	}
 	s3Key := strings.TrimSpace(req.S3Key)
 	if s3Key == "" {
@@ -156,7 +156,7 @@ func (s *ImageAssetService) ConfirmUpload(ctx context.Context, userID int64, req
 // 用于前端查看图片。URL 短期有效，过期后需重新请求。
 func (s *ImageAssetService) GetAssetAccessURL(ctx context.Context, userID, assetID int64, expires time.Duration) (string, error) {
 	if !s.storage.Configured() {
-		return "", errStorageNotConfigured
+		return "", ErrStorageNotConfigured
 	}
 	asset, err := s.assetRepo.GetByIDForOwner(ctx, userID, assetID)
 	if err != nil {
@@ -180,7 +180,7 @@ func (s *ImageAssetService) GetAssetAccessURLsByGeneration(ctx context.Context, 
 		return nil, err
 	}
 	if !s.storage.Configured() {
-		return nil, errStorageNotConfigured
+		return nil, ErrStorageNotConfigured
 	}
 	if expires <= 0 {
 		expires = 30 * time.Minute
@@ -198,19 +198,32 @@ func (s *ImageAssetService) GetAssetAccessURLsByGeneration(ctx context.Context, 
 
 // ==================== 辅助方法 ====================
 
-// buildUserUploadKey 构造用户上传输入图片的 S3 Key。
-// 格式：media/images/{user_id}/{yyyy}/{mm}/uploads/{uuid}.{ext}
+// buildUserUploadKey 构造用户上传输入图片的 S3 Key（相对 key，不含存储前缀）。
+// 格式：{user_id}/{yyyy}/{mm}/uploads/{uuid}.{ext}
+// 存储层（S3EnovaImageAssetStorage.fullKey）会自动叠加 image-generation/ 前缀，
+// 最终落盘 key 为 image-generation/{user_id}/{yyyy}/{mm}/uploads/{uuid}.{ext}。
+//
+// 不再使用 media/images/ 前缀：该前缀仅用于数据库中既有的旧记录兼容分支，
+// 新对象必须落在 image-generation/ 命名空间下，与 agnes-chat/、backups/ 隔离。
 func (s *ImageAssetService) buildUserUploadKey(userID int64, mimeType string) string {
 	now := time.Now()
 	ext := mimeTypeToExt(mimeType)
 	uuid := randomImageHex(8)
-	return fmt.Sprintf("media/images/%d/%04d/%02d/uploads/%s.%s",
+	return fmt.Sprintf("%d/%04d/%02d/uploads/%s.%s",
 		userID, now.Year(), int(now.Month()), uuid, ext)
 }
 
 // isOwnedByUser 校验 S3 Key 是否位于当前用户目录。
 // 防止用户提交任意 S3 Key 后越权访问其他用户的对象。
+//
+// 同时兼容两种格式：
+//   - 新格式：{user_id}/...（存储层叠加 image-generation/ 前缀）
+//   - 旧格式：media/images/{user_id}/...（数据库既有记录，fullKey 跳过前缀）
 func (s *ImageAssetService) isOwnedByUser(s3Key string, userID int64) bool {
-	expectedPrefix := fmt.Sprintf("media/images/%d/", userID)
-	return strings.HasPrefix(s3Key, expectedPrefix)
+	newPrefix := fmt.Sprintf("%d/", userID)
+	if strings.HasPrefix(s3Key, newPrefix) {
+		return true
+	}
+	legacyPrefix := fmt.Sprintf("media/images/%d/", userID)
+	return strings.HasPrefix(s3Key, legacyPrefix)
 }

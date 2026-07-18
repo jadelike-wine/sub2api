@@ -96,11 +96,29 @@ func (s *S3EnovaImageAssetStorage) Bucket() string   { return s.bucket }
 func (s *S3EnovaImageAssetStorage) Configured() bool { return s.configured }
 func (s *S3EnovaImageAssetStorage) Driver() string   { return "s3" }
 
+// legacyImageKeyPrefix 是引入 image-generation/ 前缀隔离前 AI 生图资产的旧 key 前缀。
+// 这些 key 已包含完整路径（media/images/{user_id}/...），在 S3 中也以此路径存储。
+// 若再叠加新前缀（image-generation/media/images/...），会指向不存在的对象。
+// 旧 key 视为绝对路径，跳过前缀拼接；新 key 仍按前缀拼接。
+//
+// 重要：新代码生成 key 时不得使用 media/images/ 前缀（见 buildUserUploadKey /
+// buildOutputS3Key / BuildInputS3Key），否则会被误判为旧 key 而跳过 image-generation/
+// 前缀，导致新对象写入 bucket 根目录。此兼容分支仅供数据库既有记录使用。
+// 未来可通过迁移工具将旧对象移至 image-generation/media/images/... 下并更新 DB key，
+// 届时可移除此兼容分支。
+const legacyImageKeyPrefix = "media/images/"
+
 func (s *S3EnovaImageAssetStorage) fullKey(key string) string {
+	// 旧 key 兼容：media/images/... 视为绝对路径，不叠加前缀。
+	// 仅数据库既有记录会命中此分支；新生成的 key 为 {user_id}/... 格式，走前缀拼接。
+	trimmed := strings.TrimPrefix(key, "/")
+	if strings.HasPrefix(trimmed, legacyImageKeyPrefix) {
+		return trimmed
+	}
 	if s.prefix == "" {
 		return key
 	}
-	return s.prefix + "/" + strings.TrimPrefix(key, "/")
+	return s.prefix + "/" + trimmed
 }
 
 func (s *S3EnovaImageAssetStorage) Put(ctx context.Context, input service.PutObjectInput) (*service.StoredObject, error) {

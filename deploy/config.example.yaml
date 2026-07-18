@@ -1186,12 +1186,14 @@ update:
 image_generation:
   enabled: false
 
-  # 存储驱动选择：local 或 s3。留空时自动推断：
-  #   - 配置了 s3_bucket 则使用 s3
-  #   - 否则使用 local
+  # 存储驱动选择：local 或 s3。留空默认 s3。
+  # - local: 使用下方 local_* 配置的本地磁盘存储
+  # - s3:    复用数据库 settings 表中的公共 S3/R2 配置（backup_s3_config），
+  #          与数据库备份和 Agnes 聊天图片共用同一套凭证，使用独立前缀 image-generation/
+  #          S3 凭证不再在此处配置，请在管理后台「设置 → 系统设置 → 数据备份 → S3/R2 存储配置」中维护
   storage_driver: "local"
 
-  # ---- 本地磁盘存储配置（storage_driver=local 时使用）----
+  # ---- 本地磁盘存储配置（仅 storage_driver=local 时使用）----
   local_storage_path: "/app/data/media"
   local_url_prefix: "/api/media"
   # URL 签名密钥（HMAC-SHA256），生成: openssl rand -hex 32
@@ -1199,17 +1201,7 @@ image_generation:
   local_min_free_space_mb: 2048
   local_max_file_size_mb: 100
 
-  # ---- S3 配置（storage_driver=s3 时使用，local 模式下可不填）----
-  s3_region: "ap-east-1"
-  s3_bucket: ""
-  s3_prefix: "media/images"
-  s3_endpoint: ""
-  s3_force_path_style: false
-  s3_access_key_id: ""
-  s3_secret_access_key: ""
-  s3_public_base_url: ""
-
-  # 预签名 URL 有效期（秒），两种驱动共用
+  # 预签名 URL 有效期（秒，仅 local 模式使用；s3 模式固定 1800）
   presigned_url_expires: 1800
 # Image Storage (异步图片任务结果对象存储)
 # =============================================================================
@@ -1219,6 +1211,11 @@ image_generation:
 # 这里配置一个 S3 兼容对象存储（AWS S3 / Cloudflare R2 / 阿里云 OSS / MinIO 等），
 # 任务完成后把生成的图片上传到对象存储，只在 Redis 存一个短链接，避免 gpt-image-1 等
 # 返回的大 base64 结果把 Redis 撑爆。
+#
+# 注意：这是独立于「管理后台 S3/R2 共享配置」的第四套存储配置。
+# 管理后台共享配置用于 Agnes 聊天图片（agnes-chat/）、AI 生图资产（image-generation/）
+# 和数据库备份（backups/）；本 image_storage.* 仅用于异步图片任务结果落盘，
+# 不与共享配置互通。如需复用同一 R2 桶，请手动填写相同的 endpoint/bucket/凭证。
 #
 # enabled 同时是异步图片任务功能的总开关：为 false 或凭证未配全时，异步生图接口
 # 整体返回 404、不创建任务、不写 Redis。
@@ -1254,12 +1251,17 @@ image_storage:
 # 形式的图片无法直接转发。本模块把 data URL 解码后上传到 Cloudflare R2（或任意
 # S3 兼容对象存储），替换为公网 HTTPS URL 再转发给上游；公网 HTTPS URL 直接透传。
 #
-# 与上方 image_generation / image_storage 完全隔离：独立桶、独立前缀、独立凭证，
-# 避免与生图资产混用。桶建议配置 R2 Lifecycle Rule 自动清理 7~30 天前的对象，
-# 避免无限累积用户上传的图片。
+# 对象存储配置（S3/R2）不在本文件声明，统一在管理后台
+# 「设置 → 系统设置 → 数据备份 → S3/R2 存储配置」中维护，与数据库备份、AI 生图共用：
+#   - Agnes 聊天图片：固定前缀 agnes-chat/
+#   - AI 生图资产（输入/输出）：固定前缀 image-generation/（旧 media/images/ key 向后兼容）
+#   - 数据库备份：固定前缀 backups/
+# 注意：上方 image_storage.* 是异步图片任务（/v1/images/generations/async）专用的
+# 第四套独立存储配置，不属于上述共享配置；仅当需要为长耗时异步生图任务单独分配
+# 对象存储时才启用。桶建议配置 R2 Lifecycle Rule 自动清理 7~30 天前的对象。
 #
 # 启用步骤：
-#   1) 配置下方 R2 凭证（endpoint / bucket / access_key_id / secret_access_key）
+#   1) 在管理后台「设置 → 数据备份 → S3/R2 存储配置」中填写 R2 凭证
 #   2) 设置 agnes_chat.enabled = true
 #   3) 在管理后台「账号编辑」界面创建一个 OpenAI API Key 类型账号：
 #        - Base URL: https://apihub.agnes-ai.com
@@ -1277,23 +1279,6 @@ agnes_chat:
   max_image_bytes: 10485760
   # 单次请求所有图片解码后总字节上限（默认 50MB）
   max_total_bytes: 52428800
-
-  # Cloudflare R2 / 任意 S3 兼容对象存储配置
-  r2:
-    # R2 端点，形如 https://<account_id>.r2.cloudflarestorage.com
-    endpoint: ""
-    # R2 固定使用 "auto"
-    region: "auto"
-    bucket: ""
-    access_key_id: ""
-    secret_access_key: ""
-    # 对象 key 前缀（最终 key 形如 {prefix}/{user_id}/{random32hex}.{ext}）
-    prefix: "agnes-chat"
-    # MinIO / 需要路径风格访问的桶设为 true；R2 / AWS S3 保持 false
-    force_path_style: false
-    # 若填写公开桶 / CDN 域名（形如 https://cdn.example.com），则返回
-    # {public_base_url}/{key} 永久直链；留空则返回带过期时间的 presigned 链接
-    public_base_url: ""
-    # public_base_url 为空时，presigned 链接的有效时长（秒）。默认 1800（30 分钟），
-    # 与 OpenAI 客户端默认超时兼容；过短会导致 Agnes 来不及读取
-    presign_expires_seconds: 1800
+  # 注意：对象存储（S3/R2）配置不再在此处声明，统一在管理后台
+  # 「设置 → 系统设置 → 数据备份 → S3/R2 存储配置」中维护，与数据库备份共用。
+  # Agnes 图片使用固定前缀 agnes-chat/ 与数据库备份（默认 backups/）隔离。

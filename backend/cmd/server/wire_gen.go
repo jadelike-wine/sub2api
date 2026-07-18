@@ -146,7 +146,14 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	grokOAuthService := service.NewGrokOAuthService(proxyRepository, grokOAuthClient)
 	grokTokenProvider := service.ProvideGrokTokenProvider(accountRepository, geminiTokenCache, grokOAuthService, oAuthRefreshAPI, tempUnschedCache)
 	openAIGatewayService := service.NewOpenAIGatewayService(accountRepository, usageLogRepository, usageBillingRepository, userRepository, userSubscriptionRepository, userGroupRateRepository, gatewayCache, configConfig, schedulerSnapshotService, concurrencyService, billingService, rateLimitService, billingCacheService, httpUpstream, deferredService, openAITokenProvider, grokTokenProvider, modelPricingResolver, channelService, balanceNotifyService, settingService, serviceUserPlatformQuotaRepository)
-	agnesChatImageStorage, err := repository.ProvideAgnesChatImageStorage(configConfig)
+	// Backup service must be created before Agnes chat image storage:
+	// the lazy storage reads the shared S3/R2 config from DB via backupService
+	// (which implements service.SharedObjectStorageConfigReader).
+	backupObjectStoreFactory := repository.NewS3BackupStoreFactory()
+	dbDumper := repository.NewPgDumper(configConfig)
+	backupService := service.ProvideBackupService(settingRepository, configConfig, secretEncryptor, backupObjectStoreFactory, dbDumper)
+	agnesChatImageStorageFactory := repository.NewS3EnovaImageAssetStorageFactory()
+	agnesChatImageStorage, err := repository.ProvideAgnesChatImageStorage(backupService, agnesChatImageStorageFactory)
 	if err != nil {
 		return nil, err
 	}
@@ -201,9 +208,6 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	adminAnnouncementHandler := admin.NewAnnouncementHandler(announcementService)
 	dataManagementService := service.NewDataManagementService()
 	dataManagementHandler := admin.NewDataManagementHandler(dataManagementService)
-	backupObjectStoreFactory := repository.NewS3BackupStoreFactory()
-	dbDumper := repository.NewPgDumper(configConfig)
-	backupService := service.ProvideBackupService(settingRepository, configConfig, secretEncryptor, backupObjectStoreFactory, dbDumper)
 	backupHandler := admin.NewBackupHandler(backupService, userService)
 	oAuthHandler := admin.NewOAuthHandler(oAuthService)
 	openAIOAuthHandler := admin.NewOpenAIOAuthHandler(openAIOAuthService, adminService, openAIQuotaService)
@@ -268,7 +272,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	imageCredentialRepository := repository.NewImageCredentialRepository(client)
 	agnesClient := service.ProvideAgnesClient(configConfig)
 	imageCredentialService := service.ProvideImageCredentialService(imageCredentialRepository, secretEncryptor, agnesClient, configConfig)
-	enovaImageAssetStorage, err := repository.ProvideEnovaImageAssetStorage(configConfig)
+	enovaImageAssetStorage, err := repository.ProvideEnovaImageAssetStorage(configConfig, backupService, agnesChatImageStorageFactory)
 	if err != nil {
 		return nil, err
 	}
