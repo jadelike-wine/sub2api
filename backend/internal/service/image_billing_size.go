@@ -9,6 +9,7 @@ import (
 const (
 	ImageBillingSize1K = "1K"
 	ImageBillingSize2K = "2K"
+	ImageBillingSize3K = "3K"
 	ImageBillingSize4K = "4K"
 
 	ImageSizeSourceOutput  = "output"
@@ -35,10 +36,14 @@ func ClassifyImageBillingTier(size string) (string, bool) {
 		return ImageBillingSize1K, true
 	case "2k":
 		return ImageBillingSize2K, true
+	case "3k":
+		return ImageBillingSize3K, true
 	case "4k":
 		return ImageBillingSize4K, true
 	case "2048x2048", "2048x1152":
 		return ImageBillingSize2K, true
+	case "3072x3072", "3072x1728":
+		return ImageBillingSize3K, true
 	case "3840x2160", "2160x3840":
 		return ImageBillingSize4K, true
 	}
@@ -221,8 +226,10 @@ func imageTierRank(tier string) int {
 		return 1
 	case ImageBillingSize2K:
 		return 2
-	case ImageBillingSize4K:
+	case ImageBillingSize3K:
 		return 3
+	case ImageBillingSize4K:
+		return 4
 	default:
 		return 0
 	}
@@ -233,7 +240,7 @@ func normalizeImageSizeBreakdown(in map[string]int) map[string]int {
 		return nil
 	}
 	out := make(map[string]int, len(in))
-	for _, tier := range []string{ImageBillingSize1K, ImageBillingSize2K, ImageBillingSize4K} {
+	for _, tier := range []string{ImageBillingSize1K, ImageBillingSize2K, ImageBillingSize3K, ImageBillingSize4K} {
 		if count := in[tier]; count > 0 {
 			out[tier] = count
 		}

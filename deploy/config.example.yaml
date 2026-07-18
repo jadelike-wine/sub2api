@@ -1173,3 +1173,39 @@ update:
   # Leave empty for direct connection (recommended for overseas servers)
   # 留空表示直连（适用于海外服务器）
   proxy_url: ""
+
+# =============================================================================
+# AI Image Generation Storage
+# AI 图片生成存储配置
+# =============================================================================
+# 支持两种存储驱动：
+#   - local: 本地磁盘存储（适合单机部署，无需 AWS S3）
+#   - s3:    AWS S3 兼容存储（适合多实例部署、CDN 加速）
+image_generation:
+  enabled: false
+
+  # 存储驱动选择：local 或 s3。留空时自动推断：
+  #   - 配置了 s3_bucket 则使用 s3
+  #   - 否则使用 local
+  storage_driver: "local"
+
+  # ---- 本地磁盘存储配置（storage_driver=local 时使用）----
+  local_storage_path: "/app/data/media"
+  local_url_prefix: "/api/media"
+  # URL 签名密钥（HMAC-SHA256），生成: openssl rand -hex 32
+  local_url_signing_secret: ""
+  local_min_free_space_mb: 2048
+  local_max_file_size_mb: 100
+
+  # ---- S3 配置（storage_driver=s3 时使用，local 模式下可不填）----
+  s3_region: "ap-east-1"
+  s3_bucket: ""
+  s3_prefix: "media/images"
+  s3_endpoint: ""
+  s3_force_path_style: false
+  s3_access_key_id: ""
+  s3_secret_access_key: ""
+  s3_public_base_url: ""
+
+  # 预签名 URL 有效期（秒），两种驱动共用
+  presigned_url_expires: 1800

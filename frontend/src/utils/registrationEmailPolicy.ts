@@ -163,3 +163,58 @@ function normalizeRegistrationEmailSuffixToken(value: string, strict: boolean): 
 function toCanonicalRegistrationEmailSuffix(domain: string): string {
   return domain.startsWith(EMAIL_SUFFIX_WILDCARD_PREFIX) ? domain : `@${domain}`
 }
+
+// ==================== Email domain select helpers ====================
+
+const EMAIL_LOCAL_PART_PATTERN = /^[a-zA-Z0-9._%+-]+$/
+const EMAIL_LOCAL_PART_MAX_LENGTH = 64
+
+// getRegistrationEmailDomainOptions extracts selectable exact domain options (without "@")
+// from the whitelist. Wildcard entries (e.g. "*.edu.cn") are excluded because they cannot
+// be enumerated as discrete options.
+export function getRegistrationEmailDomainOptions(
+  whitelist: string[] | null | undefined
+): string[] {
+  const normalizedWhitelist = normalizeRegistrationEmailSuffixWhitelist(whitelist)
+  const options: string[] = []
+  for (const entry of normalizedWhitelist) {
+    if (entry.startsWith('@')) {
+      options.push(entry.slice(1))
+    }
+  }
+  return options
+}
+
+// shouldUseEmailDomainSelect returns true when the whitelist is non-empty and contains
+// only exact domains (no wildcards). In this case the Select dropdown can enumerate every
+// valid domain, keeping the displayed list consistent with backend validation rules.
+export function shouldUseEmailDomainSelect(
+  whitelist: string[] | null | undefined
+): boolean {
+  const normalizedWhitelist = normalizeRegistrationEmailSuffixWhitelist(whitelist)
+  if (normalizedWhitelist.length === 0) {
+    return false
+  }
+  return normalizedWhitelist.every((entry) => entry.startsWith('@'))
+}
+
+// isRegistrationEmailLocalPartValid checks whether the email username (local part) is
+// non-empty and composed of allowed characters.
+export function isRegistrationEmailLocalPartValid(localPart: string): boolean {
+  const value = String(localPart || '').trim()
+  if (!value || value.length > EMAIL_LOCAL_PART_MAX_LENGTH) {
+    return false
+  }
+  return EMAIL_LOCAL_PART_PATTERN.test(value)
+}
+
+// buildRegistrationEmail combines a username and domain into a full email address.
+// Returns an empty string when either part is missing.
+export function buildRegistrationEmail(localPart: string, domain: string): string {
+  const user = String(localPart || '').trim()
+  const dom = String(domain || '').trim().toLowerCase()
+  if (!user || !dom) {
+    return ''
+  }
+  return `${user}@${dom}`
+}

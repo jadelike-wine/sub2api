@@ -33,7 +33,39 @@
           <label for="email" class="input-label">
             {{ t('auth.emailLabel') }}
           </label>
-          <div class="relative">
+          <!-- Select mode: username + domain dropdown -->
+          <div v-if="useEmailDomainSelect" class="flex items-stretch gap-2">
+            <div class="relative flex-1">
+              <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
+                <Icon name="mail" size="md" class="text-gray-400 dark:text-dark-500" />
+              </div>
+              <input
+                id="email"
+                v-model="emailUsername"
+                type="text"
+                required
+                autofocus
+                autocomplete="email"
+                :disabled="registrationActionDisabled"
+                class="input pl-11"
+                :class="{ 'input-error': errors.email }"
+                :placeholder="t('auth.emailUsernamePlaceholder')"
+              />
+            </div>
+            <span class="flex items-center text-gray-500 dark:text-dark-400">@</span>
+            <select
+              v-model="emailDomain"
+              :disabled="registrationActionDisabled"
+              class="input w-auto"
+              :class="{ 'input-error': errors.email }"
+            >
+              <option v-for="domain in emailDomainOptions" :key="domain" :value="domain">
+                {{ domain }}
+              </option>
+            </select>
+          </div>
+          <!-- Free-input mode: full email -->
+          <div v-else class="relative">
             <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
               <Icon name="mail" size="md" class="text-gray-400 dark:text-dark-500" />
             </div>
@@ -208,7 +240,7 @@
         <!-- Submit Button -->
         <button
           type="submit"
-          :disabled="registrationActionDisabled || (turnstileEnabled && !turnstileToken)"
+          :disabled="registrationActionDisabled || (turnstileEnabled && !turnstileToken) || !isEmailReady"
           class="btn btn-primary w-full"
         >
           <svg
@@ -318,9 +350,13 @@ import {
 } from '@/api/auth'
 import { buildAuthErrorMessage } from '@/utils/authError'
 import {
+  buildRegistrationEmail,
   formatRegistrationEmailSuffixWhitelistForMessage,
+  getRegistrationEmailDomainOptions,
+  isRegistrationEmailLocalPartValid,
   isRegistrationEmailSuffixAllowed,
-  normalizeRegistrationEmailSuffixWhitelist
+  normalizeRegistrationEmailSuffixWhitelist,
+  shouldUseEmailDomainSelect
 } from '@/utils/registrationEmailPolicy'
 import {
   clearAffiliateReferralCode,
@@ -361,6 +397,8 @@ const oidcOAuthProviderName = ref<string>('OIDC')
 const githubOAuthEnabled = ref<boolean>(false)
 const googleOAuthEnabled = ref<boolean>(false)
 const registrationEmailSuffixWhitelist = ref<string[]>([])
+const emailUsername = ref<string>('')
+const emailDomain = ref<string>('')
 const loginAgreementEnabled = ref<boolean>(false)
 const loginAgreementMode = ref<'modal' | 'checkbox' | string>('modal')
 const loginAgreementUpdatedAt = ref<string>('')
@@ -433,6 +471,45 @@ const agreementGateActive = computed(
 const registrationActionDisabled = computed(
   () => isLoading.value || !settingsLoaded.value || agreementGateActive.value
 )
+
+// ==================== Email Domain Select ====================
+
+const useEmailDomainSelect = computed<boolean>(() =>
+  shouldUseEmailDomainSelect(registrationEmailSuffixWhitelist.value)
+)
+
+const emailDomainOptions = computed<string[]>(() =>
+  getRegistrationEmailDomainOptions(registrationEmailSuffixWhitelist.value)
+)
+
+const fullEmail = computed<string>(() =>
+  buildRegistrationEmail(emailUsername.value, emailDomain.value)
+)
+
+// Whether the combined email is valid enough to enable the submit button in Select mode.
+const isEmailReady = computed<boolean>(() => {
+  if (!useEmailDomainSelect.value) {
+    return true
+  }
+  return isRegistrationEmailLocalPartValid(emailUsername.value) && validateEmail(fullEmail.value)
+})
+
+// Keep formData.email in sync with the username + domain selection in Select mode.
+watch([emailUsername, emailDomain], () => {
+  if (useEmailDomainSelect.value) {
+    formData.email = fullEmail.value
+  }
+}, { flush: 'sync' })
+
+// Default to the first available domain once the whitelist is loaded.
+watch(registrationEmailSuffixWhitelist, (whitelist) => {
+  if (shouldUseEmailDomainSelect(whitelist)) {
+    const options = getRegistrationEmailDomainOptions(whitelist)
+    if (options.length > 0 && !options.includes(emailDomain.value)) {
+      emailDomain.value = options[0]
+    }
+  }
+}, { immediate: true })
 
 watch(validationToastMessage, (value, previousValue) => {
   if (value && value !== previousValue) {
@@ -765,17 +842,32 @@ function validateForm(): boolean {
   }
 
   // Email validation
-  if (!formData.email.trim()) {
-    errors.email = t('auth.emailRequired')
-    isValid = false
-  } else if (!validateEmail(formData.email)) {
-    errors.email = t('auth.invalidEmail')
-    isValid = false
-  } else if (
-    !isRegistrationEmailSuffixAllowed(formData.email, registrationEmailSuffixWhitelist.value)
-  ) {
-    errors.email = buildEmailSuffixNotAllowedMessage()
-    isValid = false
+  if (useEmailDomainSelect.value) {
+    // Select mode: validate username prefix and combined email
+    if (!emailUsername.value.trim()) {
+      errors.email = t('auth.emailUsernameRequired')
+      isValid = false
+    } else if (!isRegistrationEmailLocalPartValid(emailUsername.value)) {
+      errors.email = t('auth.invalidEmail')
+      isValid = false
+    } else if (!validateEmail(fullEmail.value)) {
+      errors.email = t('auth.invalidEmail')
+      isValid = false
+    }
+  } else {
+    // Free-input mode: validate the full email and suffix whitelist
+    if (!formData.email.trim()) {
+      errors.email = t('auth.emailRequired')
+      isValid = false
+    } else if (!validateEmail(formData.email)) {
+      errors.email = t('auth.invalidEmail')
+      isValid = false
+    } else if (
+      !isRegistrationEmailSuffixAllowed(formData.email, registrationEmailSuffixWhitelist.value)
+    ) {
+      errors.email = buildEmailSuffixNotAllowedMessage()
+      isValid = false
+    }
   }
 
   // Password validation
@@ -809,6 +901,11 @@ function validateForm(): boolean {
 async function handleRegister(): Promise<void> {
   // Clear previous error
   errorMessage.value = ''
+
+  // Ensure formData.email reflects the latest username + domain selection
+  if (useEmailDomainSelect.value) {
+    formData.email = fullEmail.value
+  }
 
   // Validate form
   if (!validateForm()) {

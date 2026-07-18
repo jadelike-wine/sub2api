@@ -1,7 +1,9 @@
 import { defineConfig, loadEnv, Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import checker from 'vite-plugin-checker'
+import VueDevTools from 'vite-plugin-vue-devtools'
 import { resolve } from 'path'
+import { HttpsProxyAgent } from 'https-proxy-agent'
 
 /**
  * Vite 插件：开发模式下注入公开配置到 index.html
@@ -39,10 +41,12 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const backendUrl = env.VITE_DEV_PROXY_TARGET || 'http://localhost:8080'
   const devPort = Number(env.VITE_DEV_PORT || 3000)
+  const upstreamProxy = env.VITE_UPSTREAM_PROXY // e.g. http://127.0.0.1:7890
 
   return {
     plugins: [
       vue(),
+      VueDevTools(),
       checker({
         vueTsc: true
       }),
@@ -86,6 +90,11 @@ export default defineConfig(({ mode }) => {
               return 'vendor-ui'
             }
 
+            // Element Plus 全家桶单独分包
+            if (id.includes('/element-plus/') || id.includes('/@element-plus/')) {
+              return 'vendor-element-plus'
+            }
+
             // 图表库
             if (id.includes('/chart.js/') || id.includes('/vue-chartjs/')) {
               return 'vendor-chart'
@@ -112,15 +121,18 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': {
           target: backendUrl,
-          changeOrigin: true
+          changeOrigin: true,
+          agent: upstreamProxy ? new HttpsProxyAgent(upstreamProxy) : undefined
         },
         '/v1': {
           target: backendUrl,
-          changeOrigin: true
+          changeOrigin: true,
+          agent: upstreamProxy ? new HttpsProxyAgent(upstreamProxy) : undefined
         },
         '/setup': {
           target: backendUrl,
-          changeOrigin: true
+          changeOrigin: true,
+          agent: upstreamProxy ? new HttpsProxyAgent(upstreamProxy) : undefined
         }
       }
     }

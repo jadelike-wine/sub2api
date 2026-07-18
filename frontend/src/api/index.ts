@@ -22,6 +22,9 @@ export { totpAPI } from './totp'
 export { default as announcementsAPI } from './announcements'
 export { channelMonitorUserAPI } from './channelMonitor'
 
+// AI Image Generation API (user side)
+export { imageGenerationAPI } from './imageGeneration'
+
 // Admin APIs
 export { adminAPI } from './admin'
 

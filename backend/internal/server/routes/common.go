@@ -3,6 +3,7 @@ package routes
 import (
 	"net/http"
 
+	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/gin-gonic/gin"
 )
 
@@ -29,4 +30,19 @@ func RegisterCommonRoutes(r *gin.Engine) {
 			},
 		})
 	})
+}
+
+// RegisterMediaRoutes 注册本地媒体文件路由（无 JWT 鉴权，使用 HMAC 签名 URL）。
+// 仅在 storage_driver=local 且 MediaHandler 非 nil 时注册。
+// 路由路径：/api/media/*key
+func RegisterMediaRoutes(r *gin.Engine, h *handler.MediaHandler) {
+	if h == nil {
+		return
+	}
+	media := r.Group("/api/media")
+	{
+		media.GET("/*key", h.ServeMedia)
+		media.HEAD("/*key", h.ServeMedia)
+		media.PUT("/*key", h.ServeMedia)
+	}
 }

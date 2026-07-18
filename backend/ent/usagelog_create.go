@@ -39,9 +39,25 @@ func (_c *UsageLogCreate) SetAPIKeyID(v int64) *UsageLogCreate {
 	return _c
 }
 
+// SetNillableAPIKeyID sets the "api_key_id" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableAPIKeyID(v *int64) *UsageLogCreate {
+	if v != nil {
+		_c.SetAPIKeyID(*v)
+	}
+	return _c
+}
+
 // SetAccountID sets the "account_id" field.
 func (_c *UsageLogCreate) SetAccountID(v int64) *UsageLogCreate {
 	_c.mutation.SetAccountID(v)
+	return _c
+}
+
+// SetNillableAccountID sets the "account_id" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableAccountID(v *int64) *UsageLogCreate {
+	if v != nil {
+		_c.SetAccountID(*v)
+	}
 	return _c
 }
 
@@ -756,12 +772,6 @@ func (_c *UsageLogCreate) check() error {
 	if _, ok := _c.mutation.UserID(); !ok {
 		return &ValidationError{Name: "user_id", err: errors.New(`ent: missing required field "UsageLog.user_id"`)}
 	}
-	if _, ok := _c.mutation.APIKeyID(); !ok {
-		return &ValidationError{Name: "api_key_id", err: errors.New(`ent: missing required field "UsageLog.api_key_id"`)}
-	}
-	if _, ok := _c.mutation.AccountID(); !ok {
-		return &ValidationError{Name: "account_id", err: errors.New(`ent: missing required field "UsageLog.account_id"`)}
-	}
 	if _, ok := _c.mutation.RequestID(); !ok {
 		return &ValidationError{Name: "request_id", err: errors.New(`ent: missing required field "UsageLog.request_id"`)}
 	}
@@ -900,12 +910,6 @@ func (_c *UsageLogCreate) check() error {
 	}
 	if len(_c.mutation.UserIDs()) == 0 {
 		return &ValidationError{Name: "user", err: errors.New(`ent: missing required edge "UsageLog.user"`)}
-	}
-	if len(_c.mutation.APIKeyIDs()) == 0 {
-		return &ValidationError{Name: "api_key", err: errors.New(`ent: missing required edge "UsageLog.api_key"`)}
-	}
-	if len(_c.mutation.AccountIDs()) == 0 {
-		return &ValidationError{Name: "account", err: errors.New(`ent: missing required edge "UsageLog.account"`)}
 	}
 	return nil
 }
@@ -1125,7 +1129,7 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 		for _, k := range nodes {
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
-		_node.APIKeyID = nodes[0]
+		_node.APIKeyID = &nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	if nodes := _c.mutation.AccountIDs(); len(nodes) > 0 {
@@ -1142,7 +1146,7 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 		for _, k := range nodes {
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
-		_node.AccountID = nodes[0]
+		_node.AccountID = &nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	if nodes := _c.mutation.GroupIDs(); len(nodes) > 0 {
@@ -1255,6 +1259,12 @@ func (u *UsageLogUpsert) UpdateAPIKeyID() *UsageLogUpsert {
 	return u
 }
 
+// ClearAPIKeyID clears the value of the "api_key_id" field.
+func (u *UsageLogUpsert) ClearAPIKeyID() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldAPIKeyID)
+	return u
+}
+
 // SetAccountID sets the "account_id" field.
 func (u *UsageLogUpsert) SetAccountID(v int64) *UsageLogUpsert {
 	u.Set(usagelog.FieldAccountID, v)
@@ -1264,6 +1274,12 @@ func (u *UsageLogUpsert) SetAccountID(v int64) *UsageLogUpsert {
 // UpdateAccountID sets the "account_id" field to the value that was provided on create.
 func (u *UsageLogUpsert) UpdateAccountID() *UsageLogUpsert {
 	u.SetExcluded(usagelog.FieldAccountID)
+	return u
+}
+
+// ClearAccountID clears the value of the "account_id" field.
+func (u *UsageLogUpsert) ClearAccountID() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldAccountID)
 	return u
 }
 
@@ -2078,6 +2094,13 @@ func (u *UsageLogUpsertOne) UpdateAPIKeyID() *UsageLogUpsertOne {
 	})
 }
 
+// ClearAPIKeyID clears the value of the "api_key_id" field.
+func (u *UsageLogUpsertOne) ClearAPIKeyID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearAPIKeyID()
+	})
+}
+
 // SetAccountID sets the "account_id" field.
 func (u *UsageLogUpsertOne) SetAccountID(v int64) *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
@@ -2089,6 +2112,13 @@ func (u *UsageLogUpsertOne) SetAccountID(v int64) *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) UpdateAccountID() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateAccountID()
+	})
+}
+
+// ClearAccountID clears the value of the "account_id" field.
+func (u *UsageLogUpsertOne) ClearAccountID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearAccountID()
 	})
 }
 
@@ -3192,6 +3222,13 @@ func (u *UsageLogUpsertBulk) UpdateAPIKeyID() *UsageLogUpsertBulk {
 	})
 }
 
+// ClearAPIKeyID clears the value of the "api_key_id" field.
+func (u *UsageLogUpsertBulk) ClearAPIKeyID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearAPIKeyID()
+	})
+}
+
 // SetAccountID sets the "account_id" field.
 func (u *UsageLogUpsertBulk) SetAccountID(v int64) *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
@@ -3203,6 +3240,13 @@ func (u *UsageLogUpsertBulk) SetAccountID(v int64) *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) UpdateAccountID() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateAccountID()
+	})
+}
+
+// ClearAccountID clears the value of the "account_id" field.
+func (u *UsageLogUpsertBulk) ClearAccountID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearAccountID()
 	})
 }
 

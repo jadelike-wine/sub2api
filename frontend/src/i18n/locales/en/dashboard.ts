@@ -470,6 +470,118 @@ export default {
     }
   },
 
+  // AI Image directory (user-facing hub page)
+  aiImage: {
+    directoryTitle: 'AI Image',
+    directoryDescription: 'Entry hub for AI image generation features',
+    enter: 'Enter',
+    empty: 'No AI image features available',
+    entries: {
+      batchImage: {
+        title: 'Batch Images',
+        description: 'Submit and manage batch image generation tasks'
+      },
+      generate: {
+        title: 'AI Image Workspace',
+        description: 'Text-to-image / image-to-image, with conversation history and asset management'
+      }
+    },
+    // Generation workspace
+    workspace: {
+      title: 'AI Image Workspace',
+      description: 'Text-to-image / image-to-image',
+      // Asset retention notice
+      retentionNotice: 'Generated images and videos are kept for up to 15 days and then automatically cleaned up. Please download them in time.',
+      conversations: {
+        title: 'Conversations',
+        new: 'New Conversation',
+        search: 'Search conversations...',
+        empty: 'No conversations yet. Click "New Conversation" to start.',
+        delete: 'Delete',
+        rename: 'Rename',
+        confirmDelete: 'Deleting this conversation will also remove all its generations and assets. Continue?',
+        defaultTitle: 'Untitled Conversation',
+        loadError: 'Failed to load conversations',
+        createError: 'Failed to create conversation',
+        deleteError: 'Failed to delete conversation',
+        renameError: 'Failed to rename conversation'
+      },
+      composer: {
+        promptPlaceholder: 'Describe the image you want to generate...',
+        promptRequired: 'Prompt cannot be empty',
+        typeTextToImage: 'Text to Image',
+        typeImageToImage: 'Image to Image',
+        size: 'Size',
+        ratio: 'Ratio',
+        upload: 'Upload Reference',
+        uploadHint: 'PNG / JPEG / WebP, max 10MB each',
+        uploadError: 'Image upload failed',
+        fileTooLarge: 'Image must be under 10MB',
+        invalidType: 'Only PNG / JPEG / WebP are supported',
+        removeImage: 'Remove',
+        send: 'Generate',
+        sending: 'Generating...',
+        generating: 'Generating image, please wait',
+        maxInputs: 'Up to 6 reference images',
+        newConversation: 'Start a new conversation',
+        singleRoundLimit: 'Only one generation per conversation',
+        singleRoundLimitHint: 'Click "New Conversation" on the left to start another round'
+      },
+      generations: {
+        empty: 'No generations in this conversation yet. Type a prompt to start.',
+        loadError: 'Failed to load generations',
+        startCreating: 'Start Creating',
+        startCreatingHint: 'Enter a prompt to generate your first image',
+        delete: 'Delete',
+        retry: 'Retry',
+        download: 'Download',
+        confirmDelete: 'Delete this generation and its assets?',
+        deleteError: 'Failed to delete generation',
+        refreshUrl: 'Refresh image URL',
+        refreshUrlError: 'Failed to refresh image URL',
+        duration: 'Duration: {ms} ms',
+        inputImages: 'References',
+        outputImages: 'Outputs',
+        assetsNotFound: 'Image assets not found',
+        assetsNotFoundHint: 'The task completed but no image assets are linked. Please refresh or regenerate later.',
+        imageLoading: 'Loading image, please wait'
+      },
+      status: {
+        pending: 'Pending',
+        processing: 'Processing',
+        succeeded: 'Completed',
+        failed: 'Failed',
+        canceled: 'Canceled'
+      },
+      errors: {
+        network: 'Network error, please retry later',
+        unauthorized: 'Session expired, please sign in again',
+        notFound: 'Resource not found or already deleted',
+        forbidden: 'You do not have access to this resource',
+        quotaExceeded: 'Upstream quota exhausted, please contact the admin',
+        noCredential: 'No upstream credential available, please retry later',
+        upstream: 'Upstream service temporarily unavailable, please retry later',
+        insufficientBalance: 'Insufficient balance, please top up and retry',
+        concurrentLimit: 'Concurrent image generation limit reached, please retry later',
+        providerTimeout: 'Generation timed out, please retry later',
+        providerRateLimited: 'Upstream rate limited, please retry later',
+        providerAuthFailed: 'Upstream authentication failed, please contact the admin',
+        downloadFailed: 'Failed to download image, please retry later',
+        storageFailed: 'Failed to store image, please contact the admin',
+        invalidRequest: 'Invalid request parameters, please check and retry',
+        promptRequired: 'Please enter a prompt',
+        invalidSize: 'Unsupported image size',
+        invalidRatio: 'Unsupported image ratio',
+        inputRequired: 'At least one input image is required for image-to-image',
+        inputTooLarge: 'Uploaded image exceeds size limit',
+        inputUnsupported: 'Unsupported image format',
+        taskAlreadyRunning: 'A task is already running in this conversation, please wait',
+        disabled: 'Image generation is not enabled',
+        unknown: 'Generation failed, please retry later'
+      }
+    }
+  },
+
   // Available Channels (user-facing)
   availableChannels: {
     title: 'Available Channels',
@@ -606,6 +718,8 @@ export default {
     rpmLimit: 'RPM Limit',
     rpmUnlimited: 'Unlimited',
     memberSince: 'Member Since',
+    userId: 'User ID',
+    userIdLabel: 'ID: {id}',
     overviewTitle: 'Account Overview',
     overviewDescription: 'Check account status, profile sources, and common actions at a glance.',
     basicsTitle: 'Profile & Avatar',
@@ -825,5 +939,6 @@ export default {
     selectDateRange: 'Select date range'
   },
 
-  // Admin
+  // Admin 命名空间下的翻译（imageCredentials 等）已迁移至 i18n/locales/{zh,en}/admin/ 子目录，
+  // 由 admin/index.ts 聚合后挂载到根的 admin.* 命名空间。
 }

@@ -2096,3 +2096,249 @@ export type {
   PlatformQuotaWindow,
   PlatformQuotasResponse,
 } from '@/api/admin/users'
+
+// ==================== AI Image Generation Types ====================
+
+export type ImageGenerationType = 'text_to_image' | 'image_to_image'
+
+export type ImageGenerationStatus =
+  | 'pending'
+  | 'processing'
+  | 'succeeded'
+  | 'failed'
+  | 'canceled'
+
+export type ImageAssetType = 'input' | 'output' | 'thumbnail'
+
+export type ImageCredentialStatus = 'healthy' | 'unhealthy' | 'disabled'
+
+/** Agnes 生图支持的 size 枚举（与后端 AgnesAllowedSizes 一致） */
+export const IMAGE_GENERATION_SIZES = ['1K', '2K', '3K', '4K'] as const
+
+/** Agnes 生图支持的 ratio 枚举（与后端 AgnesAllowedRatios 一致） */
+export const IMAGE_GENERATION_RATIOS = [
+  '1:1',
+  '3:4',
+  '4:3',
+  '16:9',
+  '9:16',
+  '2:3',
+  '3:2',
+  '21:9',
+] as const
+
+/** 允许的输入图片 MIME 类型 */
+export const IMAGE_GENERATION_INPUT_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+] as const
+
+export interface ImageConversation {
+  id: number
+  title: string
+  last_message_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ImageAsset {
+  id: number
+  generation_id: number
+  asset_type: ImageAssetType
+  mime_type: string
+  file_size: number
+  width?: number | null
+  height?: number | null
+  original_filename?: string | null
+  created_at: string
+  /** 短期 Presigned GET URL（可能为空，需调用 refresh-url 接口重新获取） */
+  url?: string
+}
+
+export interface ImageGeneration {
+  id: number
+  conversation_id: number
+  parent_generation_id?: number | null
+  provider: string
+  generation_type: ImageGenerationType
+  prompt: string
+  size: string
+  ratio: string
+  status: ImageGenerationStatus
+  error_code?: string | null
+  error_message?: string | null
+  duration_ms: number
+  started_at?: string | null
+  completed_at?: string | null
+  created_at: string
+  updated_at: string
+  input_assets?: ImageAsset[]
+  output_assets?: ImageAsset[]
+}
+
+export interface CreateImageConversationRequest {
+  title?: string
+}
+
+export interface UpdateImageConversationRequest {
+  title: string
+}
+
+export interface CreateImageGenerationRequest {
+  conversation_id?: number | null
+  parent_generation_id?: number | null
+  type: ImageGenerationType
+  prompt: string
+  size: string
+  ratio?: string
+  input_asset_ids?: number[]
+}
+
+export interface PresignUploadResponse {
+  upload_url: string
+  s3_key: string
+  expires_in: number
+}
+
+export interface ConfirmUploadRequest {
+  s3_key: string
+  mime_type?: string
+  original_filename?: string | null
+}
+
+export interface RefreshAssetURLResponse {
+  url: string
+  expires_in: number
+}
+
+export interface ImageConversationListParams {
+  page?: number
+  page_size?: number
+  keyword?: string
+  created_after?: string
+  created_before?: string
+}
+
+export interface ImageGenerationListParams {
+  page?: number
+  page_size?: number
+  status?: ImageGenerationStatus
+  conversation_id?: number
+}
+
+// ==================== Admin Image Credential Types ====================
+
+export interface ImageProviderCredential {
+  id: number
+  name: string
+  provider: string
+  key_fingerprint: string
+  enabled: boolean
+  priority: number
+  weight: number
+  status: ImageCredentialStatus
+  consecutive_failures: number
+  last_used_at: string | null
+  last_success_at: string | null
+  last_failure_at: string | null
+  cooldown_until: string | null
+  last_error_code?: string | null
+  last_error_message?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateImageCredentialRequest {
+  name: string
+  provider?: string
+  api_key: string
+  enabled?: boolean
+  priority?: number
+  weight?: number
+}
+
+export interface UpdateImageCredentialRequest {
+  name?: string
+  api_key?: string
+  enabled?: boolean
+  priority?: number
+  weight?: number
+}
+
+export interface TestImageCredentialResult {
+  success: boolean
+  http_status: number
+  duration_ms: number
+  error_code?: string
+  error_message?: string
+  key_fingerprint: string
+}
+
+export interface ImageStorageStatus {
+  configured: boolean
+  bucket: string
+  driver?: 's3' | 'local'
+}
+
+/**
+ * 一键清理请求参数。
+ * - older_than_days 与 before_date 二选一，都为空则使用后端配置的 retention_days。
+ * - before_date 使用 RFC3339 格式（如 '2026-01-01T00:00:00Z'）。
+ */
+export interface ImageAssetCleanupRequest {
+  older_than_days?: number
+  before_date?: string
+  batch_size?: number
+}
+
+/**
+ * 清理预览响应（仅统计数量，不执行删除）。
+ */
+export interface ImageAssetCleanupPreview {
+  count: number
+  cutoff: string
+}
+
+/**
+ * 一键清理执行结果。
+ */
+export interface ImageAssetCleanupResult {
+  scanned: number
+  deleted_assets: number
+  deleted_storage_objects: number
+  storage_failures: number
+  db_failures: number
+  duration_ms: number
+  cutoff: string
+}
+
+/**
+ * AI 生图分层价格配置（管理员后台可改）。
+ * 各字段为 null 时表示该 tier 未配置，将使用 config.yaml 中的默认值（默认 $0.002/张）。
+ */
+export interface ImagePriceConfig {
+  price_1k_usd: number | null
+  price_2k_usd: number | null
+  price_3k_usd: number | null
+  price_4k_usd: number | null
+}
+
+/**
+ * AI 生图并发配置（管理员后台可改）。
+ * max_concurrent_per_user: 每用户最大并发生图任务数（正整数，>= 1）。
+ * config_default: config.yaml 中的默认值（供前端展示"未配置时回退到 X"）。
+ * configured: 是否已在后台显式配置（true=使用 settings 值，false=使用 config 默认）。
+ */
+export interface ImageGenerationConfig {
+  max_concurrent_per_user: number
+  config_default: number
+  configured: boolean
+}
+
+/**
+ * 更新 AI 生图并发配置的请求体。
+ */
+export interface UpdateImageGenerationConfigRequest {
+  max_concurrent_per_user: number
+}

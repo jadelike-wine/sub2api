@@ -104,6 +104,9 @@ func registerRoutes(
 	// 通用路由（健康检查、状态等）
 	routes.RegisterCommonRoutes(r)
 
+	// 本地媒体文件路由（仅在 storage_driver=local 时注册）
+	routes.RegisterMediaRoutes(r, h.Media)
+
 	// API v1
 	v1 := r.Group("/api/v1")
 

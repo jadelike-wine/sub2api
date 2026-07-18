@@ -103,6 +103,8 @@ func provideCleanup(
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
+	imageAssetCleanup *service.ImageAssetCleanupService,
+	imageGenerationDispatcher *service.ImageGenerationDispatcher,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -276,6 +278,18 @@ func provideCleanup(
 			{"UserPlatformQuotaUsageFlusher", func() error {
 				if quotaFlusher != nil {
 					quotaFlusher.Stop()
+				}
+				return nil
+			}},
+			{"ImageAssetCleanupService", func() error {
+				if imageAssetCleanup != nil {
+					imageAssetCleanup.Stop()
+				}
+				return nil
+			}},
+			{"ImageGenerationDispatcher", func() error {
+				if imageGenerationDispatcher != nil {
+					imageGenerationDispatcher.Stop()
 				}
 				return nil
 			}},

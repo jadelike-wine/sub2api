@@ -31,6 +31,7 @@ vi.mock('vue-i18n', async (importOriginal) => {
         if (key === 'profile.accountBalance') return 'Account Balance'
         if (key === 'profile.concurrencyLimit') return 'Concurrency Limit'
         if (key === 'profile.memberSince') return 'Member Since'
+        if (key === 'profile.userIdLabel') return `ID: ${params?.id ?? ''}`
         if (key === 'profile.administrator') return 'Administrator'
         if (key === 'profile.user') return 'User'
         if (key === 'profile.authBindings.providers.email') return 'Email'
@@ -87,6 +88,36 @@ describe('ProfileInfoCard', () => {
     expect(wrapper.text()).toContain('User')
     expect(wrapper.get('[data-testid="profile-basics-panel"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="profile-auth-bindings-panel"]').exists()).toBe(true)
+  })
+
+  it('renders the user id beneath the primary email', () => {
+    const wrapper = mount(ProfileInfoCard, {
+      props: {
+        user: createUser({ id: 42 })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    expect(wrapper.get('[data-testid="profile-overview-user-id"]').text()).toContain('ID: 42')
+  })
+
+  it('does not render the user id line when the id is missing', () => {
+    const wrapper = mount(ProfileInfoCard, {
+      props: {
+        user: createUser({ id: undefined as unknown as number })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    expect(wrapper.find('[data-testid="profile-overview-user-id"]').exists()).toBe(false)
   })
 
   it('renders third-party source hints from profile sources', () => {

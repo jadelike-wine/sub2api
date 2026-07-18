@@ -31,13 +31,14 @@ services:
       - redis
 
   db:
-    image: postgres:15-alpine
+    image: postgres:18-alpine
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=sub2api
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # PG18 默认 PGDATA=/var/lib/postgresql/18/docker，需挂载到父目录 /var/lib/postgresql
+      - postgres_data:/var/lib/postgresql
 
   redis:
     image: redis:7-alpine

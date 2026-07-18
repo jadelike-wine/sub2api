@@ -28,6 +28,10 @@ services:
     volumes:
       # Data persistence (config.yaml will be auto-generated here)
       - sub2api_data:/app/data
+      # AI 图片生成本地媒体存储（storage_driver=local 时使用）
+      # sub2api_data:/app/data 已包含 /app/data/media，无需额外挂载。
+      # 如需独立挂载到宿主机目录，取消注释下行：
+      # - /srv/sub2api/media:/app/data/media
       # Optional: Mount custom config.yaml (uncomment and create the file first)
       # Copy config.example.yaml to config.yaml, modify it, then uncomment:
       # - ./config.yaml:/app/data/config.yaml
@@ -149,6 +153,28 @@ services:
       # Proxy for accessing GitHub (online updates + pricing data)
       # Examples: http://host:port, socks5://host:port
       - UPDATE_PROXY_URL=${UPDATE_PROXY_URL:-}
+
+      # =======================================================================
+      # AI Image Generation Storage
+      # =======================================================================
+      # 存储驱动: local 或 s3（留空自动推断）
+      - IMAGE_GENERATION_STORAGE_DRIVER=${IMAGE_GENERATION_STORAGE_DRIVER:-local}
+      # 本地存储配置（storage_driver=local 时使用）
+      - IMAGE_GENERATION_LOCAL_STORAGE_PATH=${IMAGE_GENERATION_LOCAL_STORAGE_PATH:-/app/data/media}
+      - IMAGE_GENERATION_LOCAL_URL_PREFIX=${IMAGE_GENERATION_LOCAL_URL_PREFIX:-/api/media}
+      - IMAGE_GENERATION_LOCAL_URL_SIGNING_SECRET=${IMAGE_GENERATION_LOCAL_URL_SIGNING_SECRET:-}
+      - IMAGE_GENERATION_LOCAL_MIN_FREE_SPACE_MB=${IMAGE_GENERATION_LOCAL_MIN_FREE_SPACE_MB:-2048}
+      - IMAGE_GENERATION_LOCAL_MAX_FILE_SIZE_MB=${IMAGE_GENERATION_LOCAL_MAX_FILE_SIZE_MB:-100}
+      - IMAGE_GENERATION_PRESIGNED_URL_EXPIRES=${IMAGE_GENERATION_PRESIGNED_URL_EXPIRES:-1800}
+      # S3 配置（storage_driver=s3 时使用）
+      - IMAGE_GENERATION_S3_REGION=${IMAGE_GENERATION_S3_REGION:-}
+      - IMAGE_GENERATION_S3_BUCKET=${IMAGE_GENERATION_S3_BUCKET:-}
+      - IMAGE_GENERATION_S3_PREFIX=${IMAGE_GENERATION_S3_PREFIX:-}
+      - IMAGE_GENERATION_S3_ENDPOINT=${IMAGE_GENERATION_S3_ENDPOINT:-}
+      - IMAGE_GENERATION_S3_FORCE_PATH_STYLE=${IMAGE_GENERATION_S3_FORCE_PATH_STYLE:-false}
+      - IMAGE_GENERATION_S3_ACCESS_KEY_ID=${IMAGE_GENERATION_S3_ACCESS_KEY_ID:-}
+      - IMAGE_GENERATION_S3_SECRET_ACCESS_KEY=${IMAGE_GENERATION_S3_SECRET_ACCESS_KEY:-}
+      - IMAGE_GENERATION_S3_PUBLIC_BASE_URL=${IMAGE_GENERATION_S3_PUBLIC_BASE_URL:-}
 
       # =======================================================================
       # Image Generation Stream & Concurrency

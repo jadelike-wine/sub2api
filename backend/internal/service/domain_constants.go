@@ -42,6 +42,7 @@ const (
 	PlatformGemini      = domain.PlatformGemini
 	PlatformAntigravity = domain.PlatformAntigravity
 	PlatformGrok        = domain.PlatformGrok
+	PlatformAgnes       = "agnes"
 )
 
 // AllowedQuotaPlatforms 是允许设置 user × platform quota 的平台列表（单一权威来源）。
@@ -53,6 +54,7 @@ var AllowedQuotaPlatforms = []string{
 	PlatformGemini,
 	PlatformAntigravity,
 	PlatformGrok,
+	PlatformAgnes,
 }
 
 // IsAllowedQuotaPlatform 报告 s 是否为合法的 quota platform 标识。
@@ -403,6 +405,16 @@ const (
 	// targets OpenAI's body-level service_tier field instead of Claude's
 	// anthropic-beta header.
 	SettingKeyOpenAIFastPolicySettings = "openai_fast_policy_settings"
+
+	// SettingKeyImagePriceConfig 存储 AI 生图分层价格（管理员后台配置，JSON）。
+	// 结构对应 ImagePriceConfigSetting：1K/2K/3K/4K 四档单价（美元/张）。
+	// 任一字段为 null/省略时回退到 config.yaml 的 image_generation.price_*_usd 默认值。
+	SettingKeyImagePriceConfig = "image_price_config"
+
+	// SettingKeyImageMaxConcurrentPerUser 存储每个用户的最大并发生图任务数（正整数）。
+	// 空字符串或解析失败时回退到 config.yaml 的 image_generation.max_concurrent_per_user 默认值。
+	// 修改后立即对新请求生效（每次 CreateGeneration 都读取此值）。
+	SettingKeyImageMaxConcurrentPerUser = "image_max_concurrent_per_user"
 
 	// =========================
 	// Claude Code Version Check

@@ -721,6 +721,17 @@ var ProviderSet = wire.NewSet(
 	ProvideChannelMonitorRunner,
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
+
+	// AI 图片生成相关 services
+	ProvideAgnesClient,
+	ProvideImageCredentialService,
+	ProvideImageGenerationService,
+	ProvideImageAssetService,
+	ProvideImageAssetCleanupService,
+	ProvideAgnesCredentialScheduler,
+	ProvideImageGenerationDispatcher,
+	// 注意：wire.Bind(new(ImageObjectStorage), new(*repository.S3ImageStorage))
+	// 需要在 cmd/server/wire.go 中声明，避免 service ↔ repository 循环依赖。
 )
 
 // ProvideUserPlatformQuotaUsageFlusher 创建并启动 UserPlatformQuotaUsageFlusher。
@@ -776,4 +787,148 @@ func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *Set
 	svc.SetScheduler(r)
 	r.Start()
 	return r
+}
+
+// ==================== AI 图片生成 ====================
+
+// ProvideAgnesClient 从 config 构造 AgnesClient。
+func ProvideAgnesClient(cfg *config.Config) AgnesClient {
+	return NewAgnesClient(cfg.ImageGeneration.AgnesBaseURL, cfg.ImageGeneration.AgnesRequestPath)
+}
+
+// ProvideImageCredentialSchedulerConfig 从 config 构造调度器配置。
+func ProvideImageCredentialSchedulerConfig(cfg *config.Config) CredentialSchedulerConfig {
+	ig := cfg.ImageGeneration
+	totalTimeout := time.Duration(ig.GenerateTimeoutSeconds) * time.Second
+	if totalTimeout <= 0 {
+		totalTimeout = 180 * time.Second
+	}
+	dialTimeout := time.Duration(ig.GenerateDialTimeoutSeconds) * time.Second
+	if dialTimeout <= 0 {
+		dialTimeout = 10 * time.Second
+	}
+	headerTimeout := time.Duration(ig.GenerateResponseHeaderSeconds) * time.Second
+	if headerTimeout <= 0 {
+		headerTimeout = 60 * time.Second
+	}
+	return CredentialSchedulerConfig{
+		Provider:              PlatformAgnes,
+		MaxAttempts:           ig.MaxAttemptsPerGeneration,
+		Cooldown429Seconds:    ig.Cooldown429Seconds,
+		Cooldown429MaxSeconds: ig.Cooldown429MaxSeconds,
+		CooldownAuthSeconds:   ig.CooldownAuthSeconds,
+		Cooldown5xxSeconds:    ig.Cooldown5xxSeconds,
+		DialTimeout:           dialTimeout,
+		ResponseHeaderTimeout: headerTimeout,
+		TotalTimeout:          totalTimeout,
+	}
+}
+
+// ProvideAgnesCredentialScheduler 从 config 构造调度器。rdb 可能为 nil（降级内存游标）。
+func ProvideAgnesCredentialScheduler(
+	repo ImageCredentialRepository,
+	agnes AgnesClient,
+	encryptor SecretEncryptor,
+	rdb *redis.Client,
+	cfg *config.Config,
+) CredentialScheduler {
+	return NewAgnesCredentialScheduler(repo, agnes, encryptor, rdb, ProvideImageCredentialSchedulerConfig(cfg))
+}
+
+// ProvideImageCredentialService 从 config 构造凭据管理服务。
+func ProvideImageCredentialService(
+	repo ImageCredentialRepository,
+	encryptor SecretEncryptor,
+	agnes AgnesClient,
+	cfg *config.Config,
+) *ImageCredentialService {
+	return NewImageCredentialService(repo, encryptor, agnes, ProvideImageCredentialSchedulerConfig(cfg))
+}
+
+// ProvideImageGenerationService 从 config 构造图片生成服务，并注册卡死任务恢复。
+// 服务启动时不会自动扫描；调用方（main/server）应在启动后调用 RecoverStaleGenerations。
+func ProvideImageGenerationService(
+	conversationRepo ImageConversationRepository,
+	generationRepo ImageGenerationRepository,
+	assetRepo ImageAssetRepository,
+	credentialRepo ImageCredentialRepository,
+	scheduler CredentialScheduler,
+	storage ImageObjectStorage,
+	encryptor SecretEncryptor,
+	usageRepo UsageLogRepository,
+	userRepo UserRepository,
+	settingService *SettingService,
+	cfg *config.Config,
+) *ImageGenerationService {
+	return NewImageGenerationService(
+		conversationRepo,
+		generationRepo,
+		assetRepo,
+		credentialRepo,
+		scheduler,
+		storage,
+		encryptor,
+		usageRepo,
+		userRepo,
+		settingService,
+		cfg.ImageGeneration,
+	)
+}
+
+// ProvideImageAssetService 从 config 构造资产服务。
+func ProvideImageAssetService(
+	assetRepo ImageAssetRepository,
+	storage ImageObjectStorage,
+	cfg *config.Config,
+) *ImageAssetService {
+	maxBytes := cfg.ImageGeneration.MaxInputImageBytes
+	if maxBytes <= 0 {
+		maxBytes = 10 * 1024 * 1024
+	}
+	return NewImageAssetService(assetRepo, storage, maxBytes)
+}
+
+// ProvideImageAssetCleanupService 构造并启动图片资产清理服务。
+//
+// 依赖说明：
+//   - opsRepo：可选，用于记录清理任务 heartbeat（nil 时跳过）
+//   - db：可选，用于集群模式下的 DB advisory lock 降级（nil 时仅用 Redis lock）
+//   - redisClient：可选，用于集群模式下的 Redis leader lock（nil 时降级 DB advisory lock）
+//
+// 启动条件：cfg.ImageGeneration.Enabled && cfg.ImageGeneration.AssetCleanupEnabled。
+// 当条件不满足时 Start 内部直接返回，service 仍可被注入（供 admin handler 调用 RunOnce/PreviewCleanup）。
+func ProvideImageAssetCleanupService(
+	assetRepo ImageAssetRepository,
+	storage ImageObjectStorage,
+	opsRepo OpsRepository,
+	db *sql.DB,
+	redisClient *redis.Client,
+	cfg *config.Config,
+) *ImageAssetCleanupService {
+	svc := NewImageAssetCleanupService(assetRepo, storage, opsRepo, db, redisClient, cfg)
+	svc.Start()
+	return svc
+}
+
+// ProvideImageGenerationDispatcher 构造并启动图片生成调度器（queued 任务分发）。
+//
+// 依赖说明：
+//   - genService：提供 DispatchQueuedBatch 和 RecoverStaleGenerations 能力
+//   - opsRepo：可选，用于记录调度任务 heartbeat（nil 时跳过）
+//   - db：可选，用于集群模式下的 DB advisory lock 降级
+//   - redisClient：可选，用于集群模式下的 Redis leader lock
+//
+// 启动条件：cfg.ImageGeneration.Enabled。
+// 启动时立即执行一次扫描，恢复服务重启前遗留的 queued 任务。
+// Stop() 由 provideCleanup 注册，确保应用关闭时优雅退出。
+func ProvideImageGenerationDispatcher(
+	genService *ImageGenerationService,
+	opsRepo OpsRepository,
+	db *sql.DB,
+	redisClient *redis.Client,
+	cfg *config.Config,
+) *ImageGenerationDispatcher {
+	svc := NewImageGenerationDispatcher(genService, opsRepo, db, redisClient, cfg)
+	svc.Start()
+	return svc
 }

@@ -23,6 +23,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
 	"github.com/Wei-Shaw/sub2api/ent/identityadoptiondecision"
+	"github.com/Wei-Shaw/sub2api/ent/imageasset"
+	"github.com/Wei-Shaw/sub2api/ent/imageconversation"
+	"github.com/Wei-Shaw/sub2api/ent/imagegeneration"
+	"github.com/Wei-Shaw/sub2api/ent/imageprovidercredential"
 	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/paymentproviderinstance"
@@ -1155,6 +1159,204 @@ func init() {
 	identityadoptiondecisionDescDecidedAt := identityadoptiondecisionFields[4].Descriptor()
 	// identityadoptiondecision.DefaultDecidedAt holds the default value on creation for the decided_at field.
 	identityadoptiondecision.DefaultDecidedAt = identityadoptiondecisionDescDecidedAt.Default.(func() time.Time)
+	imageassetMixin := schema.ImageAsset{}.Mixin()
+	imageassetMixinHooks1 := imageassetMixin[1].Hooks()
+	imageasset.Hooks[0] = imageassetMixinHooks1[0]
+	imageassetMixinInters1 := imageassetMixin[1].Interceptors()
+	imageasset.Interceptors[0] = imageassetMixinInters1[0]
+	imageassetMixinFields0 := imageassetMixin[0].Fields()
+	_ = imageassetMixinFields0
+	imageassetFields := schema.ImageAsset{}.Fields()
+	_ = imageassetFields
+	// imageassetDescCreatedAt is the schema descriptor for created_at field.
+	imageassetDescCreatedAt := imageassetMixinFields0[0].Descriptor()
+	// imageasset.DefaultCreatedAt holds the default value on creation for the created_at field.
+	imageasset.DefaultCreatedAt = imageassetDescCreatedAt.Default.(func() time.Time)
+	// imageassetDescUpdatedAt is the schema descriptor for updated_at field.
+	imageassetDescUpdatedAt := imageassetMixinFields0[1].Descriptor()
+	// imageasset.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	imageasset.DefaultUpdatedAt = imageassetDescUpdatedAt.Default.(func() time.Time)
+	// imageasset.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	imageasset.UpdateDefaultUpdatedAt = imageassetDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// imageassetDescS3Bucket is the schema descriptor for s3_bucket field.
+	imageassetDescS3Bucket := imageassetFields[3].Descriptor()
+	// imageasset.S3BucketValidator is a validator for the "s3_bucket" field. It is called by the builders before save.
+	imageasset.S3BucketValidator = imageassetDescS3Bucket.Validators[0].(func(string) error)
+	// imageassetDescS3Key is the schema descriptor for s3_key field.
+	imageassetDescS3Key := imageassetFields[4].Descriptor()
+	// imageasset.S3KeyValidator is a validator for the "s3_key" field. It is called by the builders before save.
+	imageasset.S3KeyValidator = imageassetDescS3Key.Validators[0].(func(string) error)
+	// imageassetDescMimeType is the schema descriptor for mime_type field.
+	imageassetDescMimeType := imageassetFields[5].Descriptor()
+	// imageasset.MimeTypeValidator is a validator for the "mime_type" field. It is called by the builders before save.
+	imageasset.MimeTypeValidator = imageassetDescMimeType.Validators[0].(func(string) error)
+	// imageassetDescFileSize is the schema descriptor for file_size field.
+	imageassetDescFileSize := imageassetFields[6].Descriptor()
+	// imageasset.DefaultFileSize holds the default value on creation for the file_size field.
+	imageasset.DefaultFileSize = imageassetDescFileSize.Default.(int64)
+	// imageassetDescSha256 is the schema descriptor for sha256 field.
+	imageassetDescSha256 := imageassetFields[9].Descriptor()
+	// imageasset.Sha256Validator is a validator for the "sha256" field. It is called by the builders before save.
+	imageasset.Sha256Validator = imageassetDescSha256.Validators[0].(func(string) error)
+	// imageassetDescOriginalFilename is the schema descriptor for original_filename field.
+	imageassetDescOriginalFilename := imageassetFields[10].Descriptor()
+	// imageasset.OriginalFilenameValidator is a validator for the "original_filename" field. It is called by the builders before save.
+	imageasset.OriginalFilenameValidator = imageassetDescOriginalFilename.Validators[0].(func(string) error)
+	imageconversationMixin := schema.ImageConversation{}.Mixin()
+	imageconversationMixinHooks1 := imageconversationMixin[1].Hooks()
+	imageconversation.Hooks[0] = imageconversationMixinHooks1[0]
+	imageconversationMixinInters1 := imageconversationMixin[1].Interceptors()
+	imageconversation.Interceptors[0] = imageconversationMixinInters1[0]
+	imageconversationMixinFields0 := imageconversationMixin[0].Fields()
+	_ = imageconversationMixinFields0
+	imageconversationFields := schema.ImageConversation{}.Fields()
+	_ = imageconversationFields
+	// imageconversationDescCreatedAt is the schema descriptor for created_at field.
+	imageconversationDescCreatedAt := imageconversationMixinFields0[0].Descriptor()
+	// imageconversation.DefaultCreatedAt holds the default value on creation for the created_at field.
+	imageconversation.DefaultCreatedAt = imageconversationDescCreatedAt.Default.(func() time.Time)
+	// imageconversationDescUpdatedAt is the schema descriptor for updated_at field.
+	imageconversationDescUpdatedAt := imageconversationMixinFields0[1].Descriptor()
+	// imageconversation.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	imageconversation.DefaultUpdatedAt = imageconversationDescUpdatedAt.Default.(func() time.Time)
+	// imageconversation.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	imageconversation.UpdateDefaultUpdatedAt = imageconversationDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// imageconversationDescTitle is the schema descriptor for title field.
+	imageconversationDescTitle := imageconversationFields[1].Descriptor()
+	// imageconversation.DefaultTitle holds the default value on creation for the title field.
+	imageconversation.DefaultTitle = imageconversationDescTitle.Default.(string)
+	// imageconversation.TitleValidator is a validator for the "title" field. It is called by the builders before save.
+	imageconversation.TitleValidator = imageconversationDescTitle.Validators[0].(func(string) error)
+	imagegenerationFields := schema.ImageGeneration{}.Fields()
+	_ = imagegenerationFields
+	// imagegenerationDescProvider is the schema descriptor for provider field.
+	imagegenerationDescProvider := imagegenerationFields[3].Descriptor()
+	// imagegeneration.DefaultProvider holds the default value on creation for the provider field.
+	imagegeneration.DefaultProvider = imagegenerationDescProvider.Default.(string)
+	// imagegeneration.ProviderValidator is a validator for the "provider" field. It is called by the builders before save.
+	imagegeneration.ProviderValidator = imagegenerationDescProvider.Validators[0].(func(string) error)
+	// imagegenerationDescModel is the schema descriptor for model field.
+	imagegenerationDescModel := imagegenerationFields[5].Descriptor()
+	// imagegeneration.DefaultModel holds the default value on creation for the model field.
+	imagegeneration.DefaultModel = imagegenerationDescModel.Default.(string)
+	// imagegeneration.ModelValidator is a validator for the "model" field. It is called by the builders before save.
+	imagegeneration.ModelValidator = imagegenerationDescModel.Validators[0].(func(string) error)
+	// imagegenerationDescSize is the schema descriptor for size field.
+	imagegenerationDescSize := imagegenerationFields[8].Descriptor()
+	// imagegeneration.DefaultSize holds the default value on creation for the size field.
+	imagegeneration.DefaultSize = imagegenerationDescSize.Default.(string)
+	// imagegeneration.SizeValidator is a validator for the "size" field. It is called by the builders before save.
+	imagegeneration.SizeValidator = imagegenerationDescSize.Validators[0].(func(string) error)
+	// imagegenerationDescRatio is the schema descriptor for ratio field.
+	imagegenerationDescRatio := imagegenerationFields[9].Descriptor()
+	// imagegeneration.DefaultRatio holds the default value on creation for the ratio field.
+	imagegeneration.DefaultRatio = imagegenerationDescRatio.Default.(string)
+	// imagegeneration.RatioValidator is a validator for the "ratio" field. It is called by the builders before save.
+	imagegeneration.RatioValidator = imagegenerationDescRatio.Validators[0].(func(string) error)
+	// imagegenerationDescIdempotencyKey is the schema descriptor for idempotency_key field.
+	imagegenerationDescIdempotencyKey := imagegenerationFields[11].Descriptor()
+	// imagegeneration.IdempotencyKeyValidator is a validator for the "idempotency_key" field. It is called by the builders before save.
+	imagegeneration.IdempotencyKeyValidator = imagegenerationDescIdempotencyKey.Validators[0].(func(string) error)
+	// imagegenerationDescProviderRequestID is the schema descriptor for provider_request_id field.
+	imagegenerationDescProviderRequestID := imagegenerationFields[12].Descriptor()
+	// imagegeneration.ProviderRequestIDValidator is a validator for the "provider_request_id" field. It is called by the builders before save.
+	imagegeneration.ProviderRequestIDValidator = imagegenerationDescProviderRequestID.Validators[0].(func(string) error)
+	// imagegenerationDescProviderOriginalURL is the schema descriptor for provider_original_url field.
+	imagegenerationDescProviderOriginalURL := imagegenerationFields[13].Descriptor()
+	// imagegeneration.ProviderOriginalURLValidator is a validator for the "provider_original_url" field. It is called by the builders before save.
+	imagegeneration.ProviderOriginalURLValidator = imagegenerationDescProviderOriginalURL.Validators[0].(func(string) error)
+	// imagegenerationDescErrorCode is the schema descriptor for error_code field.
+	imagegenerationDescErrorCode := imagegenerationFields[14].Descriptor()
+	// imagegeneration.ErrorCodeValidator is a validator for the "error_code" field. It is called by the builders before save.
+	imagegeneration.ErrorCodeValidator = imagegenerationDescErrorCode.Validators[0].(func(string) error)
+	// imagegenerationDescDurationMs is the schema descriptor for duration_ms field.
+	imagegenerationDescDurationMs := imagegenerationFields[16].Descriptor()
+	// imagegeneration.DefaultDurationMs holds the default value on creation for the duration_ms field.
+	imagegeneration.DefaultDurationMs = imagegenerationDescDurationMs.Default.(int)
+	// imagegenerationDescCreatedAt is the schema descriptor for created_at field.
+	imagegenerationDescCreatedAt := imagegenerationFields[19].Descriptor()
+	// imagegeneration.DefaultCreatedAt holds the default value on creation for the created_at field.
+	imagegeneration.DefaultCreatedAt = imagegenerationDescCreatedAt.Default.(func() time.Time)
+	// imagegenerationDescUpdatedAt is the schema descriptor for updated_at field.
+	imagegenerationDescUpdatedAt := imagegenerationFields[20].Descriptor()
+	// imagegeneration.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	imagegeneration.DefaultUpdatedAt = imagegenerationDescUpdatedAt.Default.(func() time.Time)
+	// imagegeneration.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	imagegeneration.UpdateDefaultUpdatedAt = imagegenerationDescUpdatedAt.UpdateDefault.(func() time.Time)
+	imageprovidercredentialFields := schema.ImageProviderCredential{}.Fields()
+	_ = imageprovidercredentialFields
+	// imageprovidercredentialDescName is the schema descriptor for name field.
+	imageprovidercredentialDescName := imageprovidercredentialFields[0].Descriptor()
+	// imageprovidercredential.NameValidator is a validator for the "name" field. It is called by the builders before save.
+	imageprovidercredential.NameValidator = func() func(string) error {
+		validators := imageprovidercredentialDescName.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(name string) error {
+			for _, fn := range fns {
+				if err := fn(name); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// imageprovidercredentialDescAPIKeyEncrypted is the schema descriptor for api_key_encrypted field.
+	imageprovidercredentialDescAPIKeyEncrypted := imageprovidercredentialFields[2].Descriptor()
+	// imageprovidercredential.APIKeyEncryptedValidator is a validator for the "api_key_encrypted" field. It is called by the builders before save.
+	imageprovidercredential.APIKeyEncryptedValidator = imageprovidercredentialDescAPIKeyEncrypted.Validators[0].(func(string) error)
+	// imageprovidercredentialDescKeyFingerprint is the schema descriptor for key_fingerprint field.
+	imageprovidercredentialDescKeyFingerprint := imageprovidercredentialFields[3].Descriptor()
+	// imageprovidercredential.KeyFingerprintValidator is a validator for the "key_fingerprint" field. It is called by the builders before save.
+	imageprovidercredential.KeyFingerprintValidator = func() func(string) error {
+		validators := imageprovidercredentialDescKeyFingerprint.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(key_fingerprint string) error {
+			for _, fn := range fns {
+				if err := fn(key_fingerprint); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// imageprovidercredentialDescEnabled is the schema descriptor for enabled field.
+	imageprovidercredentialDescEnabled := imageprovidercredentialFields[4].Descriptor()
+	// imageprovidercredential.DefaultEnabled holds the default value on creation for the enabled field.
+	imageprovidercredential.DefaultEnabled = imageprovidercredentialDescEnabled.Default.(bool)
+	// imageprovidercredentialDescPriority is the schema descriptor for priority field.
+	imageprovidercredentialDescPriority := imageprovidercredentialFields[5].Descriptor()
+	// imageprovidercredential.DefaultPriority holds the default value on creation for the priority field.
+	imageprovidercredential.DefaultPriority = imageprovidercredentialDescPriority.Default.(int)
+	// imageprovidercredentialDescWeight is the schema descriptor for weight field.
+	imageprovidercredentialDescWeight := imageprovidercredentialFields[6].Descriptor()
+	// imageprovidercredential.DefaultWeight holds the default value on creation for the weight field.
+	imageprovidercredential.DefaultWeight = imageprovidercredentialDescWeight.Default.(int)
+	// imageprovidercredential.WeightValidator is a validator for the "weight" field. It is called by the builders before save.
+	imageprovidercredential.WeightValidator = imageprovidercredentialDescWeight.Validators[0].(func(int) error)
+	// imageprovidercredentialDescConsecutiveFailures is the schema descriptor for consecutive_failures field.
+	imageprovidercredentialDescConsecutiveFailures := imageprovidercredentialFields[8].Descriptor()
+	// imageprovidercredential.DefaultConsecutiveFailures holds the default value on creation for the consecutive_failures field.
+	imageprovidercredential.DefaultConsecutiveFailures = imageprovidercredentialDescConsecutiveFailures.Default.(int)
+	// imageprovidercredentialDescLastErrorCode is the schema descriptor for last_error_code field.
+	imageprovidercredentialDescLastErrorCode := imageprovidercredentialFields[13].Descriptor()
+	// imageprovidercredential.LastErrorCodeValidator is a validator for the "last_error_code" field. It is called by the builders before save.
+	imageprovidercredential.LastErrorCodeValidator = imageprovidercredentialDescLastErrorCode.Validators[0].(func(string) error)
+	// imageprovidercredentialDescCreatedAt is the schema descriptor for created_at field.
+	imageprovidercredentialDescCreatedAt := imageprovidercredentialFields[15].Descriptor()
+	// imageprovidercredential.DefaultCreatedAt holds the default value on creation for the created_at field.
+	imageprovidercredential.DefaultCreatedAt = imageprovidercredentialDescCreatedAt.Default.(func() time.Time)
+	// imageprovidercredentialDescUpdatedAt is the schema descriptor for updated_at field.
+	imageprovidercredentialDescUpdatedAt := imageprovidercredentialFields[16].Descriptor()
+	// imageprovidercredential.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	imageprovidercredential.DefaultUpdatedAt = imageprovidercredentialDescUpdatedAt.Default.(func() time.Time)
+	// imageprovidercredential.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	imageprovidercredential.UpdateDefaultUpdatedAt = imageprovidercredentialDescUpdatedAt.UpdateDefault.(func() time.Time)
 	paymentauditlogFields := schema.PaymentAuditLog{}.Fields()
 	_ = paymentauditlogFields
 	// paymentauditlogDescOrderID is the schema descriptor for order_id field.

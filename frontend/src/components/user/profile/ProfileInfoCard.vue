@@ -42,6 +42,13 @@
                 <p class="truncate text-sm text-gray-600 dark:text-gray-300">
                   {{ primaryEmailDisplay }}
                 </p>
+                <p
+                  v-if="typeof user?.id === 'number'"
+                  data-testid="profile-overview-user-id"
+                  class="text-xs text-gray-500 dark:text-gray-400"
+                >
+                  {{ t('profile.userIdLabel', { id: user.id }) }}
+                </p>
                 <div
                   v-if="sourceHints.length"
                   class="flex flex-wrap gap-2 text-xs text-gray-500 dark:text-gray-400"

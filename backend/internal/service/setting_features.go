@@ -920,3 +920,115 @@ func mergePlatformQuotaDefaults(dst, src *DefaultPlatformQuotaSetting) {
 		dst.MonthlyLimitUSD = src.MonthlyLimitUSD
 	}
 }
+
+// =========================
+// AI 生图分层价格（管理员后台配置）
+// =========================
+
+// ImagePriceConfigSetting 是 AI 生图分层价格的 settings 表存储结构。
+// 各字段为指针类型：nil 表示"未配置"，由 config.yaml 兜底默认值；
+// 非 nil 则覆盖默认值（允许 0，表示免费）。
+type ImagePriceConfigSetting struct {
+	Price1K *float64 `json:"price_1k_usd,omitempty"`
+	Price2K *float64 `json:"price_2k_usd,omitempty"`
+	Price3K *float64 `json:"price_3k_usd,omitempty"`
+	Price4K *float64 `json:"price_4k_usd,omitempty"`
+}
+
+// GetImagePriceConfig 读取管理员配置的 AI 生图分层价格。
+// 返回 nil 表示管理员未配置任何字段（调用方应回退到 config.yaml 默认值）。
+// JSON 损坏时静默返回 nil（与 GetOpenAIFastPolicySettings 的 fallback 策略一致），
+// 但记录 warn 日志便于运维定位脏数据。
+func (s *SettingService) GetImagePriceConfig(ctx context.Context) (*ImagePriceConfigSetting, error) {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyImagePriceConfig)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get image price config: %w", err)
+	}
+	if value == "" {
+		return nil, nil
+	}
+
+	var cfg ImagePriceConfigSetting
+	if err := json.Unmarshal([]byte(value), &cfg); err != nil {
+		slog.Warn("failed to unmarshal image price config, falling back to defaults",
+			"error", err,
+			"key", SettingKeyImagePriceConfig)
+		return nil, nil
+	}
+	return &cfg, nil
+}
+
+// SetImagePriceConfig 写入管理员配置的 AI 生图分层价格。
+// 校验规则：
+//   - 各字段为 nil（未配置）/ 非 nil（覆盖默认值）
+//   - 非 nil 时必须 >= 0（不允许负价）
+//   - 至少配置一个字段（不允许空对象写入，避免误清配置）
+func (s *SettingService) SetImagePriceConfig(ctx context.Context, cfg *ImagePriceConfigSetting) error {
+	if cfg == nil {
+		return fmt.Errorf("image price config cannot be nil")
+	}
+	if cfg.Price1K == nil && cfg.Price2K == nil && cfg.Price3K == nil && cfg.Price4K == nil {
+		return fmt.Errorf("image price config must set at least one tier (1K/2K/3K/4K)")
+	}
+	if cfg.Price1K != nil && *cfg.Price1K < 0 {
+		return fmt.Errorf("price_1k_usd must be >= 0")
+	}
+	if cfg.Price2K != nil && *cfg.Price2K < 0 {
+		return fmt.Errorf("price_2k_usd must be >= 0")
+	}
+	if cfg.Price3K != nil && *cfg.Price3K < 0 {
+		return fmt.Errorf("price_3k_usd must be >= 0")
+	}
+	if cfg.Price4K != nil && *cfg.Price4K < 0 {
+		return fmt.Errorf("price_4k_usd must be >= 0")
+	}
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal image price config: %w", err)
+	}
+	return s.settingRepo.Set(ctx, SettingKeyImagePriceConfig, string(data))
+}
+
+// =========================
+// AI 生图用户级并发上限（管理员后台配置）
+// =========================
+
+// GetImageMaxConcurrentPerUser 读取管理员配置的每个用户最大并发生图任务数。
+// 返回值：
+//   - value: 配置值（正整数）；当管理员未配置或读取失败时返回 0，调用方应回退到 config.yaml 默认值。
+//   - ok: true 表示管理员已显式配置；false 表示未配置或读取失败。
+//
+// 校验规则：值必须为正整数，否则视为未配置（返回 0, false），避免脏数据导致并发检查失效。
+func (s *SettingService) GetImageMaxConcurrentPerUser(ctx context.Context) (value int, ok bool) {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyImageMaxConcurrentPerUser)
+	if err != nil {
+		if !errors.Is(err, ErrSettingNotFound) {
+			slog.Warn("failed to read image_max_concurrent_per_user from settings",
+				"error", err, "key", SettingKeyImageMaxConcurrentPerUser)
+		}
+		return 0, false
+	}
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		slog.Warn("invalid image_max_concurrent_per_user value in settings, ignoring",
+			"raw_value", raw, "key", SettingKeyImageMaxConcurrentPerUser)
+		return 0, false
+	}
+	return n, true
+}
+
+// SetImageMaxConcurrentPerUser 写入管理员配置的每个用户最大并发生图任务数。
+// 校验规则：value 必须为正整数（>= 1）。
+func (s *SettingService) SetImageMaxConcurrentPerUser(ctx context.Context, value int) error {
+	if value < 1 {
+		return fmt.Errorf("max_concurrent_per_user must be a positive integer (got %d)", value)
+	}
+	return s.settingRepo.Set(ctx, SettingKeyImageMaxConcurrentPerUser, strconv.Itoa(value))
+}

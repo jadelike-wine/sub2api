@@ -189,6 +189,8 @@ export default {
     channelPricing: 'Channel Pricing',
     channelMonitor: 'Channel Monitor',
     channelStatus: 'Channel Status',
+    aiImage: 'AI Image',
+    imageCredentials: 'AI Image Credentials',
     riskControl: 'Risk Control',
   },
 
@@ -209,6 +211,9 @@ export default {
     registrationDisabled: 'Registration is currently disabled. Please contact the administrator.',
     emailLabel: 'Email',
     emailPlaceholder: 'Enter your email',
+    emailUsernamePlaceholder: 'Enter email username',
+    emailUsernameRequired: 'Email username is required',
+    emailDomainLabel: 'Email domain',
     passwordLabel: 'Password',
     passwordPlaceholder: 'Enter your password',
     createPasswordPlaceholder: 'Create a strong password',

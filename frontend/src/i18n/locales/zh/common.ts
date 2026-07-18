@@ -189,6 +189,8 @@ export default {
     channelPricing: '渠道定价',
     channelMonitor: '渠道监控',
     channelStatus: '渠道状态',
+    aiImage: 'AI 生图',
+    imageCredentials: 'AI 生图凭据',
     riskControl: '风控中心',
   },
 
@@ -209,6 +211,9 @@ export default {
     registrationDisabled: '注册功能暂时关闭，请联系管理员。',
     emailLabel: '邮箱',
     emailPlaceholder: '请输入邮箱',
+    emailUsernamePlaceholder: '请输入邮箱用户名',
+    emailUsernameRequired: '请输入邮箱用户名',
+    emailDomainLabel: '邮箱域名',
     passwordLabel: '密码',
     passwordPlaceholder: '请输入密码',
     createPasswordPlaceholder: '创建一个安全的密码',

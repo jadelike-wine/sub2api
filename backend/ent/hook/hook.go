@@ -225,6 +225,54 @@ func (f IdentityAdoptionDecisionFunc) Mutate(ctx context.Context, m ent.Mutation
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.IdentityAdoptionDecisionMutation", m)
 }
 
+// The ImageAssetFunc type is an adapter to allow the use of ordinary
+// function as ImageAsset mutator.
+type ImageAssetFunc func(context.Context, *ent.ImageAssetMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f ImageAssetFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.ImageAssetMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.ImageAssetMutation", m)
+}
+
+// The ImageConversationFunc type is an adapter to allow the use of ordinary
+// function as ImageConversation mutator.
+type ImageConversationFunc func(context.Context, *ent.ImageConversationMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f ImageConversationFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.ImageConversationMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.ImageConversationMutation", m)
+}
+
+// The ImageGenerationFunc type is an adapter to allow the use of ordinary
+// function as ImageGeneration mutator.
+type ImageGenerationFunc func(context.Context, *ent.ImageGenerationMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f ImageGenerationFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.ImageGenerationMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.ImageGenerationMutation", m)
+}
+
+// The ImageProviderCredentialFunc type is an adapter to allow the use of ordinary
+// function as ImageProviderCredential mutator.
+type ImageProviderCredentialFunc func(context.Context, *ent.ImageProviderCredentialMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f ImageProviderCredentialFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.ImageProviderCredentialMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.ImageProviderCredentialMutation", m)
+}
+
 // The PaymentAuditLogFunc type is an adapter to allow the use of ordinary
 // function as PaymentAuditLog mutator.
 type PaymentAuditLogFunc func(context.Context, *ent.PaymentAuditLogMutation) (ent.Value, error)

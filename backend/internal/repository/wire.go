@@ -98,6 +98,16 @@ var ProviderSet = wire.NewSet(
 	NewUserPlatformQuotaRepository,     // T14: user × platform quota
 	NewUserPlatformQuotaServiceAdapter, // T14: adapter → service.UserPlatformQuotaRepository
 
+	// AI 图片生成相关 repositories
+	NewImageConversationRepository,
+	NewImageGenerationRepository,
+	NewImageAssetRepository,
+	NewImageCredentialRepository,
+	ProvideS3ImageStorage,
+	// ProvideImageStorage 是存储工厂，根据 storage_driver 选择 local 或 s3 实现。
+	// 返回 service.ImageObjectStorage 接口，替代之前的 wire.Bind 方式。
+	ProvideImageStorage,
+
 	// Cache implementations
 	NewGatewayCache,
 	NewBillingCache,
@@ -203,4 +213,30 @@ func ProvideSQLDB(client *ent.Client) (*sql.DB, error) {
 // 提供：*redis.Client
 func ProvideRedis(cfg *config.Config) *redis.Client {
 	return InitRedis(cfg)
+}
+
+// ProvideS3ImageStorage 从 config.Config 构造 S3 图片存储。
+//
+// AWS 凭据优先级：
+//  1. config.yaml / 环境变量中的静态 AccessKeyID + SecretAccessKey
+//  2. EC2 IAM Role / ECS Task Role（当两者为空时，awsconfig.LoadDefaultConfig 自动走链）
+//
+// Bucket 为空时返回未配置实例（Configured()=false），不阻塞启动。
+//
+// 依赖：*config.Config
+// 提供：*S3ImageStorage（由 service 层通过 wire.Bind 绑定到 service.ImageObjectStorage）
+func ProvideS3ImageStorage(cfg *config.Config) (*S3ImageStorage, error) {
+	ig := cfg.ImageGeneration
+	storageCfg := service.ImageStorageConfig{
+		Region:                     ig.S3Region,
+		Bucket:                     ig.S3Bucket,
+		Prefix:                     ig.S3Prefix,
+		Endpoint:                   ig.S3Endpoint,
+		ForcePathStyle:             ig.S3ForcePathStyle,
+		AccessKeyID:                ig.S3AccessKeyID,
+		SecretAccessKey:            ig.S3SecretAccessKey,
+		PublicBaseURL:              ig.S3PublicBaseURL,
+		PresignedURLExpiresSeconds: ig.PresignedURLExpires,
+	}
+	return NewS3ImageStorage(storageCfg)
 }

@@ -1220,6 +1220,15 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 		requestIDArg = requestID
 	}
 
+	// api_key_id / account_id 允许 NULL（JWT 用户直接调用的功能无 apiKey/account）
+	var apiKeyIDArg, accountIDArg any
+	if log.APIKeyID != 0 {
+		apiKeyIDArg = log.APIKeyID
+	}
+	if log.AccountID != 0 {
+		accountIDArg = log.AccountID
+	}
+
 	return usageLogInsertPrepared{
 		createdAt:      createdAt,
 		requestID:      requestID,
@@ -1227,8 +1236,8 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 		requestType:    requestType,
 		args: []any{
 			log.UserID,
-			log.APIKeyID,
-			log.AccountID,
+			apiKeyIDArg,
+			accountIDArg,
 			requestIDArg,
 			log.Model,
 			nullString(&requestedModel),

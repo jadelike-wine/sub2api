@@ -1,5 +1,8 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
+import ElementPlus from 'element-plus'
+import 'element-plus/dist/index.css'
+import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import App from './App.vue'
 import router from './router'
 import i18n, { initI18n } from './i18n'
@@ -21,6 +24,11 @@ async function bootstrap() {
   const app = createApp(App)
   const pinia = createPinia()
   app.use(pinia)
+  // 注册 element-plus 及其图标（全局可用，后续可直接使用 el-xxx 组件）
+  app.use(ElementPlus)
+  for (const [iconName, iconComponent] of Object.entries(ElementPlusIconsVue)) {
+    app.component(iconName, iconComponent)
+  }
 
   // Initialize settings from injected config BEFORE mounting (prevents flash)
   // This must happen after pinia is installed but before router and i18n

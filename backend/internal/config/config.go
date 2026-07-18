@@ -94,6 +94,92 @@ type Config struct {
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
+	ImageGeneration         ImageGenerationConfig         `mapstructure:"image_generation"`
+}
+
+// ImageGenerationConfig 配置 AI 图片生成功能（Agnes 上游 + AWS S3 持久化）。
+// AWS 凭据优先走 IAM Role / 环境变量；如需在管理后台配置，则通过 settings 表覆盖。
+type ImageGenerationConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+
+	// Agnes 上游
+	AgnesBaseURL     string `mapstructure:"agnes_base_url"`
+	AgnesModel       string `mapstructure:"agnes_model"`
+	AgnesAPIKey      string `mapstructure:"agnes_api_key"` // 仅用于本地开发兜底；生产应走管理后台配置
+	AgnesRequestPath string `mapstructure:"agnes_request_path"`
+
+	// 超时拆分（秒）
+	GenerateTimeoutSeconds        int `mapstructure:"generate_timeout_seconds"`
+	GenerateDialTimeoutSeconds    int `mapstructure:"generate_dial_timeout_seconds"`
+	GenerateResponseHeaderSeconds int `mapstructure:"generate_response_header_seconds"`
+	DownloadTimeoutSeconds        int `mapstructure:"download_timeout_seconds"`
+	S3UploadTimeoutSeconds        int `mapstructure:"s3_upload_timeout_seconds"`
+
+	// 凭据调度
+	MaxAttemptsPerGeneration int `mapstructure:"max_attempts_per_generation"`
+	Cooldown429Seconds       int `mapstructure:"cooldown_429_seconds"`
+	Cooldown429MaxSeconds    int `mapstructure:"cooldown_429_max_seconds"`
+	CooldownAuthSeconds      int `mapstructure:"cooldown_auth_seconds"`
+	Cooldown5xxSeconds       int `mapstructure:"cooldown_5xx_seconds"`
+
+	// 限制
+	MaxPromptChars       int   `mapstructure:"max_prompt_chars"`
+	MaxInputImagesPerGen int   `mapstructure:"max_input_images_per_gen"`
+	MaxInputImageBytes   int64 `mapstructure:"max_input_image_bytes"`
+	MaxOutputImageBytes  int64 `mapstructure:"max_output_image_bytes"`
+
+	// S3 / 对象存储（环境变量兜底；管理后台 settings 可覆盖）
+	S3Region            string `mapstructure:"s3_region"`
+	S3Bucket            string `mapstructure:"s3_bucket"`
+	S3Prefix            string `mapstructure:"s3_prefix"`
+	S3Endpoint          string `mapstructure:"s3_endpoint"`
+	S3ForcePathStyle    bool   `mapstructure:"s3_force_path_style"`
+	S3AccessKeyID       string `mapstructure:"s3_access_key_id"`
+	S3SecretAccessKey   string `mapstructure:"s3_secret_access_key"`
+	S3PublicBaseURL     string `mapstructure:"s3_public_base_url"`
+	PresignedURLExpires int    `mapstructure:"presigned_url_expires"` // 秒
+
+	// 存储驱动选择与本地磁盘存储配置
+	// StorageDriver: "local" 或 "s3"；留空时自动推断（有 S3Bucket 则 s3，否则 local）
+	StorageDriver string `mapstructure:"storage_driver"`
+	// LocalStoragePath: 本地文件存储根目录（如 /app/data/media）
+	LocalStoragePath string `mapstructure:"local_storage_path"`
+	// LocalURLPrefix: 本地媒体访问 URL 前缀（如 /api/media）
+	LocalURLPrefix string `mapstructure:"local_url_prefix"`
+	// LocalURLSigningSecret: HMAC-SHA256 签名密钥，用于生成带过期时间的访问 URL
+	LocalURLSigningSecret string `mapstructure:"local_url_signing_secret"`
+	// LocalMinFreeSpaceMB: 磁盘剩余空间下限（MB），低于此值拒绝写入
+	LocalMinFreeSpaceMB int `mapstructure:"local_min_free_space_mb"`
+	// LocalMaxFileSizeMB: 单个文件大小上限（MB）
+	LocalMaxFileSizeMB int `mapstructure:"local_max_file_size_mb"`
+
+	// 任务恢复
+	StaleProcessingAfterSeconds int `mapstructure:"stale_processing_after_seconds"`
+	RecoveryIntervalSeconds     int `mapstructure:"recovery_interval_seconds"`
+
+	// 并发
+	MaxConcurrentPerUser int `mapstructure:"max_concurrent_per_user"`
+
+	// 资产清理（孤立文件回收）
+	// AssetCleanupEnabled 是否启用后台定时清理已软删除的图片资产。
+	// 默认 true：清理是运维必要功能，且默认配置安全（只清已软删除 + 7 天保留）。
+	AssetCleanupEnabled bool `mapstructure:"asset_cleanup_enabled"`
+	// AssetCleanupRetentionDays 已软删除资产保留天数，超过后才会被定时清理。
+	// 默认 7 天，给用户一段"可恢复"窗口（虽然当前未实现恢复，但保留 DB 记录便于审计）。
+	AssetCleanupRetentionDays int `mapstructure:"asset_cleanup_retention_days"`
+	// AssetCleanupIntervalMinutes 定时扫描间隔（分钟）。默认 60。
+	AssetCleanupIntervalMinutes int `mapstructure:"asset_cleanup_interval_minutes"`
+	// AssetCleanupBatchSize 每批拉取的资产数量。默认 100。
+	AssetCleanupBatchSize int `mapstructure:"asset_cleanup_batch_size"`
+
+	// 计费
+	// Price1K/2K/3K/4KUSD 是各尺寸 tier 的扣费单价（美元/张），作为兜底默认值。
+	// 管理员可在后台通过 settings 表覆盖（参见 SettingKeyImagePriceConfig）。
+	// 仅在生成成功后扣费，失败不扣；允许透支（余额可变为负数）。
+	Price1KUSD float64 `mapstructure:"price_1k_usd"`
+	Price2KUSD float64 `mapstructure:"price_2k_usd"`
+	Price3KUSD float64 `mapstructure:"price_3k_usd"`
+	Price4KUSD float64 `mapstructure:"price_4k_usd"`
 }
 
 type LogConfig struct {
@@ -1865,6 +1951,50 @@ func setDefaults() {
 	viper.SetDefault("batch_image.vertex_output_retention_hours", 72)
 	viper.SetDefault("batch_image.vertex_batch_prediction_base_url", "")
 	viper.SetDefault("batch_image.vertex_gcs_base_url", "")
+
+	// AI 图片生成（Agnes + S3）
+	viper.SetDefault("image_generation.enabled", false)
+	viper.SetDefault("image_generation.agnes_base_url", "https://apihub.agnes-ai.com")
+	viper.SetDefault("image_generation.agnes_model", "agnes-image-2.1-flash")
+	viper.SetDefault("image_generation.agnes_request_path", "/v1/images/generations")
+	viper.SetDefault("image_generation.generate_timeout_seconds", 180)
+	viper.SetDefault("image_generation.generate_dial_timeout_seconds", 10)
+	viper.SetDefault("image_generation.generate_response_header_seconds", 180)
+	viper.SetDefault("image_generation.download_timeout_seconds", 60)
+	viper.SetDefault("image_generation.s3_upload_timeout_seconds", 120)
+	viper.SetDefault("image_generation.max_attempts_per_generation", 3)
+	viper.SetDefault("image_generation.cooldown_429_seconds", 60)
+	viper.SetDefault("image_generation.cooldown_429_max_seconds", 1800)
+	viper.SetDefault("image_generation.cooldown_auth_seconds", 3600)
+	viper.SetDefault("image_generation.cooldown_5xx_seconds", 60)
+	viper.SetDefault("image_generation.max_prompt_chars", 8000)
+	viper.SetDefault("image_generation.max_input_images_per_gen", 6)
+	viper.SetDefault("image_generation.max_input_image_bytes", 10485760)  // 10MB
+	viper.SetDefault("image_generation.max_output_image_bytes", 52428800) // 50MB
+	viper.SetDefault("image_generation.s3_prefix", "media/images")
+	viper.SetDefault("image_generation.s3_force_path_style", false)
+	viper.SetDefault("image_generation.presigned_url_expires", 1800) // 30 分钟
+	viper.SetDefault("image_generation.stale_processing_after_seconds", 300)
+	viper.SetDefault("image_generation.recovery_interval_seconds", 60)
+	viper.SetDefault("image_generation.max_concurrent_per_user", 3)
+	// 存储驱动与本地磁盘配置：必须注册 SetDefault，否则 Viper AutomaticEnv
+	// 不会为这些 key 查找环境变量（AutomaticEnv 仅对已注册的 key 生效）。
+	// 默认值留空，让 ProvideImageStorage factory 自动推断驱动、要求用户显式配置签名密钥。
+	viper.SetDefault("image_generation.storage_driver", "")
+	viper.SetDefault("image_generation.local_storage_path", "")
+	viper.SetDefault("image_generation.local_url_prefix", "")
+	viper.SetDefault("image_generation.local_url_signing_secret", "")
+	viper.SetDefault("image_generation.local_min_free_space_mb", 0)
+	viper.SetDefault("image_generation.local_max_file_size_mb", 0)
+	viper.SetDefault("image_generation.asset_cleanup_enabled", true)
+	viper.SetDefault("image_generation.asset_cleanup_retention_days", 7)
+	viper.SetDefault("image_generation.asset_cleanup_interval_minutes", 60)
+	viper.SetDefault("image_generation.asset_cleanup_batch_size", 100)
+	// 计费：各 tier 每张图片扣费单价（美元），作为兜底默认值；管理员可在后台 settings 覆盖
+	viper.SetDefault("image_generation.price_1k_usd", 0.002)
+	viper.SetDefault("image_generation.price_2k_usd", 0.002)
+	viper.SetDefault("image_generation.price_3k_usd", 0.002)
+	viper.SetDefault("image_generation.price_4k_usd", 0.002)
 
 	// Ops (vNext)
 	viper.SetDefault("ops.enabled", true)

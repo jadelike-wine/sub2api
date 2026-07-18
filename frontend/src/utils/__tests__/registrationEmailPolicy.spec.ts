@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildRegistrationEmail,
   formatRegistrationEmailSuffixWhitelistForMessage,
+  getRegistrationEmailDomainOptions,
+  isRegistrationEmailLocalPartValid,
   isRegistrationEmailSuffixAllowed,
   isRegistrationEmailSuffixDomainValid,
   normalizeRegistrationEmailSuffixDomain,
   normalizeRegistrationEmailSuffixDomains,
   normalizeRegistrationEmailSuffixWhitelist,
-  parseRegistrationEmailSuffixWhitelistInput
+  parseRegistrationEmailSuffixWhitelistInput,
+  shouldUseEmailDomainSelect
 } from '@/utils/registrationEmailPolicy'
 
 describe('registrationEmailPolicy utils', () => {
@@ -117,5 +121,96 @@ describe('registrationEmailPolicy utils', () => {
         { separator: ', ', more: (count) => `and ${count} more` }
       )
     ).toBe('@a.com, @b.com, @c.com, @d.com, @e.com, and 2 more')
+  })
+})
+
+describe('getRegistrationEmailDomainOptions', () => {
+  it('returns exact domains (without @) from the whitelist', () => {
+    expect(
+      getRegistrationEmailDomainOptions(['@qq.com', '@163.com', '126.com', 'sina.com'])
+    ).toEqual(['qq.com', '163.com', '126.com', 'sina.com'])
+  })
+
+  it('excludes wildcard entries from options', () => {
+    expect(
+      getRegistrationEmailDomainOptions(['@qq.com', '*.edu.cn', '@163.com'])
+    ).toEqual(['qq.com', '163.com'])
+  })
+
+  it('returns empty array when whitelist is empty or undefined', () => {
+    expect(getRegistrationEmailDomainOptions([])).toEqual([])
+    expect(getRegistrationEmailDomainOptions(null)).toEqual([])
+    expect(getRegistrationEmailDomainOptions(undefined)).toEqual([])
+  })
+
+  it('normalizes raw input before extracting options', () => {
+    expect(
+      getRegistrationEmailDomainOptions(['@QQ.COM', ' @Foxmail.com ', '163.com'])
+    ).toEqual(['qq.com', 'foxmail.com', '163.com'])
+  })
+})
+
+describe('shouldUseEmailDomainSelect', () => {
+  it('returns true when whitelist contains only exact domains', () => {
+    expect(shouldUseEmailDomainSelect(['@qq.com', '@163.com'])).toBe(true)
+    expect(shouldUseEmailDomainSelect(['qq.com', '163.com'])).toBe(true)
+  })
+
+  it('returns false when whitelist contains wildcard entries', () => {
+    expect(shouldUseEmailDomainSelect(['@qq.com', '*.edu.cn'])).toBe(false)
+    expect(shouldUseEmailDomainSelect(['*.edu.cn'])).toBe(false)
+  })
+
+  it('returns false when whitelist is empty or undefined', () => {
+    expect(shouldUseEmailDomainSelect([])).toBe(false)
+    expect(shouldUseEmailDomainSelect(null)).toBe(false)
+    expect(shouldUseEmailDomainSelect(undefined)).toBe(false)
+  })
+})
+
+describe('isRegistrationEmailLocalPartValid', () => {
+  it('accepts typical email usernames', () => {
+    expect(isRegistrationEmailLocalPartValid('zhangsan')).toBe(true)
+    expect(isRegistrationEmailLocalPartValid('zhang.san')).toBe(true)
+    expect(isRegistrationEmailLocalPartValid('zhang-san')).toBe(true)
+    expect(isRegistrationEmailLocalPartValid('zhang_san')).toBe(true)
+    expect(isRegistrationEmailLocalPartValid('zhang+san')).toBe(true)
+    expect(isRegistrationEmailLocalPartValid('zhang123')).toBe(true)
+    expect(isRegistrationEmailLocalPartValid('user%tag')).toBe(true)
+  })
+
+  it('rejects empty or whitespace-only input', () => {
+    expect(isRegistrationEmailLocalPartValid('')).toBe(false)
+    expect(isRegistrationEmailLocalPartValid('   ')).toBe(false)
+    expect(isRegistrationEmailLocalPartValid(null as unknown as string)).toBe(false)
+  })
+
+  it('rejects usernames with invalid characters', () => {
+    expect(isRegistrationEmailLocalPartValid('zhang@san')).toBe(false)
+    expect(isRegistrationEmailLocalPartValid('zhang san')).toBe(false)
+    expect(isRegistrationEmailLocalPartValid('中文用户')).toBe(false)
+    expect(isRegistrationEmailLocalPartValid('zhang/san')).toBe(false)
+  })
+
+  it('rejects usernames exceeding 64 characters', () => {
+    expect(isRegistrationEmailLocalPartValid('a'.repeat(64))).toBe(true)
+    expect(isRegistrationEmailLocalPartValid('a'.repeat(65))).toBe(false)
+  })
+})
+
+describe('buildRegistrationEmail', () => {
+  it('combines username and domain with @ separator', () => {
+    expect(buildRegistrationEmail('zhangsan', 'qq.com')).toBe('zhangsan@qq.com')
+    expect(buildRegistrationEmail('ZhangSan', 'QQ.COM')).toBe('ZhangSan@qq.com')
+  })
+
+  it('trims whitespace from both parts', () => {
+    expect(buildRegistrationEmail('  zhangsan  ', '  qq.com  ')).toBe('zhangsan@qq.com')
+  })
+
+  it('returns empty string when either part is missing', () => {
+    expect(buildRegistrationEmail('', 'qq.com')).toBe('')
+    expect(buildRegistrationEmail('zhangsan', '')).toBe('')
+    expect(buildRegistrationEmail('', '')).toBe('')
   })
 })

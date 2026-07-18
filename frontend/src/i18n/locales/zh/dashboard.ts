@@ -475,6 +475,123 @@ export default {
     }
   },
 
+  // AI Image directory (user-facing hub page)
+  aiImage: {
+    directoryTitle: 'AI 生图',
+    directoryDescription: 'AI 图像生成相关功能的入口合集',
+    enter: '进入',
+    empty: '暂无可用的 AI 生图功能',
+    entries: {
+      batchImage: {
+        title: '批量生图',
+        description: '提交并管理批量图像生成任务'
+      },
+      generate: {
+        title: 'AI 生图工作台',
+        description: '文生图 / 图生图，支持会话历史与图片管理'
+      }
+    },
+    // 生图工作台
+    workspace: {
+      title: 'AI 生图工作台',
+      description: '文生图 / 图生图',
+      // 资产保存期限提示
+      retentionNotice: '生成的图片与视频最多保存 15 天，过期将自动清理，请及时下载保存。',
+      // 左侧会话列表
+      conversations: {
+        title: '会话列表',
+        new: '新建会话',
+        search: '搜索会话...',
+        empty: '暂无会话，点击「新建会话」开始创作',
+        delete: '删除',
+        rename: '重命名',
+        confirmDelete: '删除该会话将一并删除其下所有生成记录与图片，确定继续？',
+        defaultTitle: '未命名会话',
+        loadError: '加载会话失败',
+        createError: '创建会话失败',
+        deleteError: '删除会话失败',
+        renameError: '重命名失败'
+      },
+      // 输入区
+      composer: {
+        promptPlaceholder: '输入提示词描述你想要生成的图片...',
+        promptRequired: '提示词不能为空',
+        typeTextToImage: '文生图',
+        typeImageToImage: '图生图',
+        size: '尺寸',
+        ratio: '比例',
+        upload: '上传参考图',
+        uploadHint: '支持 PNG / JPEG / WebP，单张最大 10MB',
+        uploadError: '图片上传失败',
+        fileTooLarge: '图片大小不能超过 10MB',
+        invalidType: '仅支持 PNG / JPEG / WebP 格式',
+        removeImage: '移除',
+        send: '生成',
+        sending: '生成中...',
+        generating: '正在生成图片，请稍候',
+        maxInputs: '最多上传 6 张参考图',
+        newConversation: '开始新会话',
+        singleRoundLimit: '每个会话仅支持一轮生图',
+        singleRoundLimitHint: '点击左侧「新建会话」开始下一轮创作'
+      },
+      // 生成任务展示
+      generations: {
+        empty: '当前会话暂无生成记录，输入提示词开始创作吧',
+        loadError: '加载生成记录失败',
+        startCreating: '开始创作',
+        startCreatingHint: '输入提示词，生成你的第一张图片',
+        delete: '删除',
+        retry: '重试',
+        download: '下载',
+        confirmDelete: '确定删除该生成任务及其图片？',
+        deleteError: '删除生成任务失败',
+        refreshUrl: '刷新图片链接',
+        refreshUrlError: '刷新图片链接失败',
+        duration: '耗时 {ms} ms',
+        inputImages: '参考图',
+        outputImages: '生成结果',
+        assetsNotFound: '图片资源未找到',
+        assetsNotFoundHint: '任务已完成但未关联到图片资源，请稍后刷新或重新生成',
+        imageLoading: '图片加载中，请稍候'
+      },
+      // 状态
+      status: {
+        pending: '排队中',
+        processing: '生成中',
+        succeeded: '已完成',
+        failed: '失败',
+        canceled: '已取消'
+      },
+      // 错误信息
+      errors: {
+        network: '网络异常，请稍后重试',
+        unauthorized: '登录已过期，请重新登录',
+        notFound: '资源不存在或已被删除',
+        forbidden: '无权访问该资源',
+        quotaExceeded: '上游配额已用尽，请联系管理员',
+        noCredential: '上游凭据暂不可用，请稍后再试',
+        upstream: '上游服务临时不可用，请稍后重试',
+        insufficientBalance: '余额不足，请充值后再试',
+        concurrentLimit: '当前生图任务已达到并发上限，请稍后重试',
+        providerTimeout: '生成超时，请稍后重试',
+        providerRateLimited: '上游请求被限流，请稍后重试',
+        providerAuthFailed: '上游凭据认证失败，请联系管理员',
+        downloadFailed: '图片下载失败，请稍后重试',
+        storageFailed: '图片存储失败，请联系管理员',
+        invalidRequest: '请求参数有误，请检查后重试',
+        promptRequired: '请输入提示词',
+        invalidSize: '不支持的图片尺寸',
+        invalidRatio: '不支持的图片比例',
+        inputRequired: '图生图模式需要至少上传一张图片',
+        inputTooLarge: '上传图片超出大小限制',
+        inputUnsupported: '不支持的图片格式',
+        taskAlreadyRunning: '当前会话已有任务在进行中，请等待完成',
+        disabled: '图片生成功能未开启',
+        unknown: '生成失败，请稍后重试'
+      }
+    }
+  },
+
   // Available Channels (user-facing)
   availableChannels: {
     title: '可用渠道',
@@ -611,6 +728,8 @@ export default {
     rpmLimit: 'RPM 限制',
     rpmUnlimited: '不限制',
     memberSince: '注册时间',
+    userId: '用户 ID',
+    userIdLabel: 'ID: {id}',
     overviewTitle: '账户总览',
     overviewDescription: '快速查看账号状态、资料来源与常用设置。',
     basicsTitle: '资料与头像',
@@ -830,5 +949,6 @@ export default {
     selectDateRange: '选择日期范围'
   },
 
-  // Admin
+  // Admin 命名空间下的翻译（imageCredentials 等）已迁移至 i18n/locales/{zh,en}/admin/ 子目录，
+  // 由 admin/index.ts 聚合后挂载到根的 admin.* 命名空间。
 }

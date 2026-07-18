@@ -123,5 +123,41 @@ func RegisterUserRoutes(
 			monitors.GET("", h.ChannelMonitor.List)
 			monitors.GET("/:id/status", h.ChannelMonitor.GetStatus)
 		}
+
+		// AI 图片生成
+		registerImageGenerationUserRoutes(authenticated, h)
+	}
+}
+
+// registerImageGenerationUserRoutes 注册用户侧图片生成路由（会话 / 生成任务 / 资产上传）。
+// 所有路由已通过 authenticated 分组应用 JWT 鉴权与 BackendModeUserGuard。
+func registerImageGenerationUserRoutes(authenticated *gin.RouterGroup, h *handler.Handlers) {
+	// 会话
+	conversations := authenticated.Group("/image-conversations")
+	{
+		conversations.POST("", h.ImageGeneration.CreateConversation)
+		conversations.GET("", h.ImageGeneration.ListConversations)
+		conversations.GET("/:id", h.ImageGeneration.GetConversation)
+		conversations.PATCH("/:id", h.ImageGeneration.UpdateConversation)
+		conversations.DELETE("/:id", h.ImageGeneration.DeleteConversation)
+		conversations.GET("/:id/generations", h.ImageGeneration.ListGenerationsByConversation)
+	}
+
+	// 生成任务
+	generations := authenticated.Group("/image-generations")
+	{
+		generations.POST("", h.ImageGeneration.CreateGeneration)
+		generations.GET("", h.ImageGeneration.ListGenerations)
+		generations.GET("/:id", h.ImageGeneration.GetGeneration)
+		generations.DELETE("/:id", h.ImageGeneration.DeleteGeneration)
+		generations.GET("/:id/assets", h.ImageGeneration.GetGenerationAssets)
+	}
+
+	// 资产上传
+	assets := authenticated.Group("/image-assets")
+	{
+		assets.POST("/presign-upload", h.ImageGeneration.PresignUpload)
+		assets.POST("/confirm-upload", h.ImageGeneration.ConfirmUpload)
+		assets.POST("/:id/refresh-url", h.ImageGeneration.RefreshAssetURL)
 	}
 }

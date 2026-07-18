@@ -479,6 +479,30 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/ai-image',
+    name: 'AiImage',
+    component: () => import('@/views/user/AiImageView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'AI Image',
+      titleKey: 'nav.aiImage',
+      descriptionKey: 'aiImage.directoryDescription'
+    }
+  },
+  {
+    path: '/ai-image/workspace',
+    name: 'AiImageWorkspace',
+    component: () => import('@/views/user/ImageWorkspaceView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'AI Image Workspace',
+      titleKey: 'aiImage.workspace.title',
+      descriptionKey: 'aiImage.workspace.description'
+    }
+  },
+  {
     path: '/admin/subscriptions',
     name: 'AdminSubscriptions',
     component: () => import('@/views/admin/SubscriptionsView.vue'),
@@ -585,6 +609,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Usage Records',
       titleKey: 'admin.usage.title',
       descriptionKey: 'admin.usage.description'
+    }
+  },
+  {
+    path: '/admin/image-credentials',
+    name: 'AdminImageCredentials',
+    component: () => import('@/views/admin/ImageCredentialsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'AI Image Credentials',
+      titleKey: 'admin.imageCredentials.title',
+      descriptionKey: 'admin.imageCredentials.description'
     }
   },
   {

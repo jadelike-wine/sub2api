@@ -328,8 +328,13 @@ func collectUsageLogIDs(logs []service.UsageLog) usageLogIDs {
 
 	for i := range logs {
 		userIDs[logs[i].UserID] = struct{}{}
-		apiKeyIDs[logs[i].APIKeyID] = struct{}{}
-		accountIDs[logs[i].AccountID] = struct{}{}
+		// api_key_id / account_id 可能为 0（NULL，JWT 用户直接调用场景），跳过避免无意义查询
+		if logs[i].APIKeyID != 0 {
+			apiKeyIDs[logs[i].APIKeyID] = struct{}{}
+		}
+		if logs[i].AccountID != 0 {
+			accountIDs[logs[i].AccountID] = struct{}{}
+		}
 		if logs[i].GroupID != nil {
 			groupIDs[*logs[i].GroupID] = struct{}{}
 		}
@@ -427,8 +432,8 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 	var (
 		id                        int64
 		userID                    int64
-		apiKeyID                  int64
-		accountID                 int64
+		apiKeyID                  sql.NullInt64
+		accountID                 sql.NullInt64
 		requestID                 sql.NullString
 		model                     string
 		requestedModel            sql.NullString
@@ -545,8 +550,8 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 	log := &service.UsageLog{
 		ID:                        id,
 		UserID:                    userID,
-		APIKeyID:                  apiKeyID,
-		AccountID:                 accountID,
+		APIKeyID:                  apiKeyID.Int64,
+		AccountID:                 accountID.Int64,
 		Model:                     model,
 		RequestedModel:            coalesceTrimmedString(requestedModel, model),
 		InputTokens:               inputTokens,

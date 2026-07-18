@@ -106,6 +106,46 @@ func RegisterAdminRoutes(
 
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
+
+		// AI 图片生成（凭据管理 + S3 配置状态）
+		registerImageGenerationAdminRoutes(admin, h)
+	}
+}
+
+// registerImageGenerationAdminRoutes 注册管理员侧图片生成路由。
+// 凭据 CRUD + 测试 + S3 配置状态查询 + 孤立资产清理 + 分层价格配置。
+// 所有路由由 adminAuth 中间件强制管理员鉴权。
+func registerImageGenerationAdminRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	credentials := admin.Group("/image-provider-credentials")
+	{
+		credentials.GET("", h.Admin.ImageGeneration.ListCredentials)
+		credentials.GET("/:id", h.Admin.ImageGeneration.GetCredential)
+		credentials.POST("", h.Admin.ImageGeneration.CreateCredential)
+		credentials.PATCH("/:id", h.Admin.ImageGeneration.UpdateCredential)
+		credentials.DELETE("/:id", h.Admin.ImageGeneration.DeleteCredential)
+		credentials.POST("/:id/test", h.Admin.ImageGeneration.TestCredential)
+	}
+
+	storage := admin.Group("/image-storage")
+	{
+		storage.GET("/status", h.Admin.ImageGeneration.GetStorageStatus)
+		// 孤立资产清理（一键清理 + 预览）
+		storage.POST("/cleanup", h.Admin.ImageGeneration.CleanupAssets)
+		storage.GET("/cleanup/preview", h.Admin.ImageGeneration.PreviewCleanup)
+	}
+
+	// AI 生图分层价格配置（1K/2K/3K/4K）
+	pricing := admin.Group("/image-pricing")
+	{
+		pricing.GET("", h.Admin.ImageGeneration.GetImagePricing)
+		pricing.PUT("", h.Admin.ImageGeneration.UpdateImagePricing)
+	}
+
+	// AI 生图并发配置（每用户最大并发任务数）
+	genConfig := admin.Group("/image-generation-config")
+	{
+		genConfig.GET("", h.Admin.ImageGeneration.GetGenerationConfig)
+		genConfig.PUT("", h.Admin.ImageGeneration.UpdateGenerationConfig)
 	}
 }
 
