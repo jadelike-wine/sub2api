@@ -2212,7 +2212,6 @@ export interface ImageGeneration {
   id: number
   conversation_id: number
   parent_generation_id?: number | null
-  provider: string
   generation_type: ImageGenerationType
   prompt: string
   size: string

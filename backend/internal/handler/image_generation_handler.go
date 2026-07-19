@@ -497,12 +497,11 @@ func conversationToDTO(c *service.ImageConversation) *imageConversationDTO {
 
 // imageGenerationDTO 生成任务 DTO。
 // 安全：不返回 provider_credential_id（非管理员不可见）；
-//       不返回 model（C 端用户无需感知具体上游模型）。
+//       不返回 provider / model（C 端用户无需感知具体上游供应商与模型）。
 type imageGenerationDTO struct {
 	ID                  int64      `json:"id"`
 	ConversationID      int64      `json:"conversation_id"`
 	ParentGenerationID  *int64     `json:"parent_generation_id,omitempty"`
-	Provider            string     `json:"provider"`
 	GenerationType      string     `json:"generation_type"`
 	Prompt              string     `json:"prompt"`
 	Size                string     `json:"size"`
@@ -527,7 +526,6 @@ func generationToDTO(g *service.ImageGeneration) *imageGenerationDTO {
 		ID:                 g.ID,
 		ConversationID:     g.ConversationID,
 		ParentGenerationID: g.ParentGenerationID,
-		Provider:           g.Provider,
 		GenerationType:     g.GenerationType,
 		Prompt:             g.Prompt,
 		Size:               g.Size,

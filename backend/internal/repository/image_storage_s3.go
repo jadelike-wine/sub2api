@@ -138,12 +138,22 @@ func (s *S3EnovaImageAssetStorage) Put(ctx context.Context, input service.PutObj
 		contentType = "application/octet-stream"
 	}
 
+	// Cache-Control: 与本地存储一致（private, max-age=1800）。
+	// 不可变图片内容（asset.id + objectKey 唯一）可被浏览器在签名 URL 有效期内复用，
+	// 避免路由切换 / 重新拉取列表时反复下载同一张 1.6MB 图片。
+	// 时长取 1800s（30min），与 presignExp 默认值对齐：
+	//   - presigned URL 有效期通常为 30～60min（桶边界或 presignExp 决定）
+	//   - 缓存固定 30min，保证 max-age 不会超过 URL 实际可访问时间
+	//   - URL 过期后浏览器会重新走 presign 流程，新 URL 仍命中对象本身的缓存元数据
+	cacheControl := "private, max-age=1800"
+
 	finish := servertiming.ObserveDependency(ctx, "s3")
 	out, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      &s.bucket,
-		Key:         &key,
-		Body:        bytes.NewReader(data),
-		ContentType: &contentType,
+		Bucket:       &s.bucket,
+		Key:          &key,
+		Body:         bytes.NewReader(data),
+		ContentType:  &contentType,
+		CacheControl: &cacheControl,
 	})
 	finish()
 	if err != nil {

@@ -204,6 +204,7 @@
                       :preview-teleported="true"
                       hide-on-click-modal
                       class="h-20 w-20 cursor-zoom-in overflow-hidden rounded-lg border border-gray-200 dark:border-dark-600"
+                      @error="onImageLoadError(asset)"
                     >
                       <template #placeholder>
                         <div class="flex h-20 w-20 flex-col items-center justify-center gap-1 bg-gray-100 dark:bg-dark-700">
@@ -237,6 +238,7 @@
                           :preview-teleported="true"
                           hide-on-click-modal
                           class="w-full cursor-zoom-in"
+                          @error="onImageLoadError(asset)"
                         >
                           <template #placeholder>
                             <div class="flex aspect-square w-full flex-col items-center justify-center gap-2 bg-gray-100 dark:bg-dark-900">
@@ -367,6 +369,7 @@
                   :preview-src-list="getPendingInputAssetUrls()"
                   :initial-index="pendingInputAssets.findIndex((a) => a.id === asset.id)"
                   class="h-24 w-24 cursor-zoom-in overflow-hidden rounded-lg border border-gray-200 dark:border-dark-600"
+                  @error="onImageLoadError(asset)"
                 >
                   <template #placeholder>
                     <div class="flex h-24 w-24 flex-col items-center justify-center gap-1 bg-gray-100 dark:bg-dark-700">
@@ -747,9 +750,33 @@ function onRemovePendingAsset(assetId: number) {
   store.removePendingInputAsset(assetId)
 }
 
+/**
+ * el-image 加载失败处理：签名 URL 失效（403/401）时刷新 URL 并重试一次。
+ *
+ * 工作流程：
+ *   1. el-image 触发 error 事件
+ *   2. 调用 store.handleImageLoadError(assetId)
+ *      - 第一次失败：调用后端 refresh-asset-url 获取新签名 URL，更新 store
+ *        el-image 因为 src 变化自动重新加载
+ *      - 第二次失败（refresh 后仍失败）：不再重试，el-image 显示 error 占位
+ *   3. 失败重试标记在模块级缓存中维护，asset 删除 / 会话切换时清除
+ *
+ * 不处理的情况：
+ *   - 网络断开（el-image 自身会显示 error，重新连接后浏览器自动重试）
+ *   - 对象已被删除（refresh 也无法恢复，显示 error 占位即可）
+ */
+async function onImageLoadError(asset: ImageAsset) {
+  await store.handleImageLoadError(asset.id)
+}
+
 // ==================== Lifecycle ====================
 
 onMounted(async () => {
+  // 路由切换回来时：
+  //  - 如果 store 已有会话列表，仍刷新一次以获取最新列表（轻量请求，不触发图片下载）
+  //  - 如果 store 已有当前会话的 generations，不重新拉取（避免后端生成新签名 URL 覆盖缓存）
+  //  - 已完成的 generation（succeeded/failed/canceled/timeout）不重启轮询
+  //    （selectConversation 内部已按 isRunningStatus 过滤，此处无需额外处理）
   try {
     await store.fetchConversations()
   } catch (err) {
@@ -758,8 +785,10 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  // Stop all polling when leaving the workspace; conversations data is retained
-  // in store so returning to the page won't re-fetch from scratch immediately.
+  // 路由切换离开时：
+  //  - 只停止轮询计时器（避免后台空跑）
+  //  - 不清空 store 中的 generations / currentConversation（保留状态供下次回来复用）
+  //  - 不清空模块级图片 URL 缓存（assetId + objectKey 缓存独立于组件生命周期）
   store.stopAllPolling()
 })
 </script>

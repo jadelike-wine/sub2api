@@ -35,6 +35,27 @@ import {
   POLL_INTERVAL_MIN_MS,
   POLL_MAX_FAILURES,
 } from './imagePolling'
+import {
+  mergeAssetsWithCache,
+  setCachedURL,
+  invalidateAsset,
+  clearAll as clearAssetCache,
+  refreshURLWithDedup,
+  markAssetRetried,
+  wasAssetRetried,
+  extractObjectKey,
+  assetStableKey,
+  isSignedURLExpiringSoon,
+} from './imageAssetCache'
+
+// 重新导出纯函数，保持与现有测试的向后兼容
+// 这些函数现在由 imageAssetCache 模块统一实现，支持本地存储和 S3/R2 两种签名 URL 格式
+export {
+  extractObjectKey,
+  assetStableKey,
+  isSignedURLExpiringSoon,
+  wasAssetRetried,
+}
 
 // 默认分页
 const DEFAULT_PAGE_SIZE = 20
@@ -73,54 +94,12 @@ function makeIdempotencyKey(): string {
 // ============================================================================
 // URL 合并 / 过期判断纯函数
 //
-// 抽出到模块顶层以便单元测试。setup store 内部直接引用这些函数。
+// extractObjectKey / assetStableKey / isSignedURLExpiringSoon 已迁移到
+// ./imageAssetCache 模块统一实现（支持本地存储 + S3/R2 两种签名 URL 格式）。
+// 此处保留 mergeAssetURLs 用于 upsertGeneration（轮询合并新旧 asset URL）。
 // ============================================================================
 
-/**
- * 从签名 URL 中提取 objectKey（URL path 部分），解析失败返回空串。
- * 例如 `/api/media/images/xxx.png` → `/api/media/images/xxx.png`。
- */
-export function extractObjectKey(url: string | undefined): string {
-  if (!url) return ''
-  try {
-    const u = new URL(url, window.location.origin)
-    return u.pathname
-  } catch {
-    return ''
-  }
-}
 
-/**
- * 构造 asset 的稳定判断键：`asset.id + objectKey`。
- * objectKey 从 URL 的 path 部分提取，同一 asset.id + 同一 objectKey 才认为是同一张图片。
- * URL 缺失或解析失败时退化为仅用 id。
- */
-export function assetStableKey(a: ImageAsset): string {
-  const objectKey = extractObjectKey(a.url)
-  return objectKey ? `${a.id}|${objectKey}` : `${a.id}|`
-}
-
-/**
- * 检查签名 URL 是否在 bufferSeconds 内过期。
- *
- * 兼容 `expires` 和 `exp` 两种参数名（后端实现统一为 `expires`，但兼容 `exp`
- * 以防未来切换到更短的参数名时前端漏改导致始终误判为"即将过期"）。
- *
- * 解析失败（URL 无 expires/exp 参数、非法数字、相对路径、URL 解析异常等）时返回 true，
- * 使调用方使用后端返回的新 URL，避免一直保留无法判断过期的旧地址。
- */
-export function isSignedURLExpiringSoon(url: string, bufferSeconds: number): boolean {
-  try {
-    const u = new URL(url, window.location.origin)
-    const expiresStr = u.searchParams.get('expires') ?? u.searchParams.get('exp')
-    if (!expiresStr) return true // 无 expires/exp 参数，按"即将过期"处理
-    const expires = parseInt(expiresStr, 10)
-    if (Number.isNaN(expires) || expires === 0) return true // 非法数字或非签名 URL，按"即将过期"处理
-    return Date.now() / 1000 + bufferSeconds >= expires
-  } catch {
-    return true
-  }
-}
 
 /**
  * 合并新旧 asset 列表的 URL：如果同一 asset（id + objectKey 均一致）已存在且旧 URL 尚未接近过期，
@@ -281,8 +260,14 @@ export const useImageGenerationStore = defineStore('imageGeneration', () => {
       // 仅当旧 URL 快过期时（60s 内）才允许用新 URL 刷新。
       gen.input_assets = mergeAssetURLs(existing.input_assets, gen.input_assets)
       gen.output_assets = mergeAssetURLs(existing.output_assets, gen.output_assets)
+      // 同步写入模块级缓存（仅在旧 URL 过期时用新 URL 更新）
+      if (gen.input_assets) gen.input_assets.forEach((a) => setCachedURL(a, a.url))
+      if (gen.output_assets) gen.output_assets.forEach((a) => setCachedURL(a, a.url))
       generations.value[idx] = gen
     } else {
+      // 新 generation：直接写入缓存
+      if (gen.input_assets) gen.input_assets.forEach((a) => setCachedURL(a, a.url))
+      if (gen.output_assets) gen.output_assets.forEach((a) => setCachedURL(a, a.url))
       generations.value.unshift(gen)
     }
   }
@@ -358,9 +343,17 @@ export const useImageGenerationStore = defineStore('imageGeneration', () => {
         }),
       ])
       currentConversation.value = conv
-      generations.value = gens
+      // 重要：不能直接 generations.value = gens
+      // 后端每次 listGenerationsByConversation 都会为每个 asset 生成新的 presigned URL
+      // （S3 的 X-Amz-Signature 包含时间戳，每次都不同），直接覆盖会导致：
+      //   1. 浏览器看到不同的 URL，无法复用缓存，图片被重新下载
+      //   2. 路由切换回来重新拉取列表时，所有图片 URL 都变化
+      // 解决：用模块级 asset URL 缓存合并 —— assetId + objectKey 一致且旧 URL 未过期时
+      //       保留旧 URL（命中浏览器缓存），否则使用新 URL 并更新缓存。
+      generations.value = mergeGenerationsWithURLCache(gens)
       // 自动恢复进行中任务的轮询（仅对运行态任务；timeout 等本地虚拟终态不重启）
-      for (const gen of gens) {
+      // succeeded / failed / canceled 等终态任务不会重启轮询
+      for (const gen of generations.value) {
         if (isRunningStatus(gen.status)) {
           schedulePoll(gen.id)
         }
@@ -373,6 +366,22 @@ export const useImageGenerationStore = defineStore('imageGeneration', () => {
     }
   }
 
+  /**
+   * 将后端返回的 generation 列表与模块级 asset URL 缓存合并：
+   *  - 缓存中有未过期的 URL → 保留缓存 URL（命中浏览器缓存）
+   *  - 缓存中没有或已过期 → 使用新 URL 并写入缓存
+   *
+   * 这样即使路由切换回来重新拉取 generation 列表，只要签名 URL 未过期，
+   * 浏览器就能复用已缓存的图片，不会重新下载。
+   */
+  function mergeGenerationsWithURLCache(gens: ImageGeneration[]): ImageGeneration[] {
+    return gens.map((gen) => ({
+      ...gen,
+      input_assets: mergeAssetsWithCache(gen.input_assets),
+      output_assets: mergeAssetsWithCache(gen.output_assets),
+    }))
+  }
+
   async function fetchGenerationsByConversation(
     conversationId: number,
     params?: { page?: number; page_size?: number }
@@ -383,14 +392,15 @@ export const useImageGenerationStore = defineStore('imageGeneration', () => {
         conversationId,
         params
       )
-      generations.value = items
-      // 自动恢复进行中任务的轮询（仅对运行态任务）
-      for (const gen of items) {
+      const merged = mergeGenerationsWithURLCache(items)
+      generations.value = merged
+      // 自动恢复进行中任务的轮询（仅对运行态任务；终态任务不重启）
+      for (const gen of merged) {
         if (isRunningStatus(gen.status)) {
           schedulePoll(gen.id)
         }
       }
-      return items
+      return merged
     } catch (err) {
       setLastError(err)
       throw err
@@ -443,6 +453,11 @@ export const useImageGenerationStore = defineStore('imageGeneration', () => {
     // 若删除的是当前会话，清空相关状态并进入 draft 草稿态
     if (currentConversation.value?.id === id) {
       stopAllPolling()
+      // 失效该会话下所有 asset 的 URL 缓存
+      generations.value.forEach((g) => {
+        g.input_assets?.forEach((a) => invalidateAsset(a.id))
+        g.output_assets?.forEach((a) => invalidateAsset(a.id))
+      })
       currentConversation.value = null
       isDraftConversation.value = true
       generations.value = []
@@ -555,19 +570,27 @@ export const useImageGenerationStore = defineStore('imageGeneration', () => {
     await imageGenerationAPI.deleteGeneration(id)
     clearPollTimer(id)
     setActive(id, false)
+    // 失效该 generation 下所有 asset 的 URL 缓存，防止删除后仍用旧 URL 访问
+    const gen = generations.value.find((g) => g.id === id)
+    if (gen) {
+      gen.input_assets?.forEach((a) => invalidateAsset(a.id))
+      gen.output_assets?.forEach((a) => invalidateAsset(a.id))
+    }
     generations.value = generations.value.filter((g) => g.id !== id)
   }
 
   async function refreshGenerationAssets(id: number): Promise<ImageAsset[]> {
     const assets = await imageGenerationAPI.getGenerationAssets(id)
+    // 用模块级缓存合并 URL，避免每次 refresh 都生成新签名 URL
+    const merged = mergeAssetsWithCache(assets) ?? assets
     const idx = generations.value.findIndex((g) => g.id === id)
     if (idx >= 0) {
       generations.value[idx] = {
         ...generations.value[idx],
-        output_assets: assets,
+        output_assets: merged,
       }
     }
-    return assets
+    return merged
   }
 
   // ==================== Polling ====================
@@ -737,6 +760,8 @@ export const useImageGenerationStore = defineStore('imageGeneration', () => {
         mime_type: file.type,
         original_filename: file.name || null,
       })
+      // 写入模块级缓存，便于后续在 generation 列表中复用 URL
+      setCachedURL(asset, asset.url)
       pendingInputAssets.value = [...pendingInputAssets.value, asset]
       return asset
     } catch (err) {
@@ -748,6 +773,8 @@ export const useImageGenerationStore = defineStore('imageGeneration', () => {
   }
 
   function removePendingInputAsset(assetId: number) {
+    // 从待上传列表移除时同步失效缓存（用户主动删除，不再需要该 URL）
+    invalidateAsset(assetId)
     pendingInputAssets.value = pendingInputAssets.value.filter((a) => a.id !== assetId)
   }
 
@@ -755,22 +782,81 @@ export const useImageGenerationStore = defineStore('imageGeneration', () => {
     pendingInputAssets.value = []
   }
 
+  /**
+   * 刷新指定 asset 的签名 URL。
+   *
+   * 使用模块级 Promise 去重：多个组件同时检测到 URL 过期并尝试刷新时，
+   * 只发起一次实际请求，其他调用方等待同一个 Promise。
+   * 刷新成功后同步更新 store 中所有引用该 asset 的位置 + 模块级缓存。
+   */
   async function refreshAssetURL(assetId: number): Promise<string> {
-    const resp = await imageGenerationAPI.refreshAssetURL(assetId)
-    // 同步更新输出资产 URL
+    // 先从 store 中找到 asset 对象，用于构造缓存 key
+    let asset: ImageAsset | undefined
     for (const gen of generations.value) {
-      if (!gen.output_assets) continue
-      const idx = gen.output_assets.findIndex((a) => a.id === assetId)
-      if (idx >= 0) {
-        gen.output_assets[idx] = { ...gen.output_assets[idx], url: resp.url }
+      asset = gen.output_assets?.find((a) => a.id === assetId)
+        ?? gen.input_assets?.find((a) => a.id === assetId)
+      if (asset) break
+    }
+    if (!asset) {
+      asset = pendingInputAssets.value.find((a) => a.id === assetId)
+    }
+    if (!asset) {
+      // 找不到 asset 时退化为直接调用接口（无法做 Promise 去重）
+      const resp = await imageGenerationAPI.refreshAssetURL(assetId)
+      return resp.url
+    }
+
+    // 使用 Promise 去重刷新 URL
+    const newURL = await refreshURLWithDedup(asset, async (id) => {
+      const resp = await imageGenerationAPI.refreshAssetURL(id)
+      return resp.url
+    })
+
+    // 同步更新 store 中所有引用该 asset 的位置
+    for (const gen of generations.value) {
+      if (gen.output_assets) {
+        const idx = gen.output_assets.findIndex((a) => a.id === assetId)
+        if (idx >= 0) {
+          gen.output_assets[idx] = { ...gen.output_assets[idx], url: newURL }
+        }
+      }
+      if (gen.input_assets) {
+        const idx = gen.input_assets.findIndex((a) => a.id === assetId)
+        if (idx >= 0) {
+          gen.input_assets[idx] = { ...gen.input_assets[idx], url: newURL }
+        }
       }
     }
     // 同步 pendingInputAssets
     const pIdx = pendingInputAssets.value.findIndex((a) => a.id === assetId)
     if (pIdx >= 0) {
-      pendingInputAssets.value[pIdx] = { ...pendingInputAssets.value[pIdx], url: resp.url }
+      pendingInputAssets.value[pIdx] = { ...pendingInputAssets.value[pIdx], url: newURL }
     }
-    return resp.url
+    return newURL
+  }
+
+  /**
+   * 图片加载失败（403 / 签名失效等）时的统一处理。
+   *
+   * 策略：
+   *   1. 第一次失败 → 调用 refreshAssetURL 刷新签名 URL，el-image 会用新 URL 自动重试
+   *   2. 第二次失败（refresh 后仍失败）→ 不再重试，让 el-image 显示 error 占位
+   *   3. asset 被 invalidate（删除 / 会话切换）时清除重试标记，允许将来重新触发
+   *
+   * @returns true 表示已触发刷新（el-image 会自动重试）；false 表示不再重试
+   */
+  async function handleImageLoadError(assetId: number): Promise<boolean> {
+    // 已重试过，不再刷新
+    if (wasAssetRetried(assetId)) return false
+    // 标记为已重试（在 refresh 前标记，避免 refresh 期间又触发 error 重复 refresh）
+    markAssetRetried(assetId)
+    try {
+      await refreshAssetURL(assetId)
+      return true
+    } catch (err) {
+      setLastError(err)
+      return false
+    }
   }
 
   // ==================== Cleanup ====================
@@ -785,6 +871,8 @@ export const useImageGenerationStore = defineStore('imageGeneration', () => {
     generations.value = []
     pendingInputAssets.value = []
     lastError.value = null
+    // 清空模块级图片 URL 缓存（用户登出 / 切换用户时调用）
+    clearAssetCache()
   }
 
   return {
@@ -831,6 +919,7 @@ export const useImageGenerationStore = defineStore('imageGeneration', () => {
     removePendingInputAsset,
     clearPendingInputAssets,
     refreshAssetURL,
+    handleImageLoadError,
     // Misc
     reset,
   }
