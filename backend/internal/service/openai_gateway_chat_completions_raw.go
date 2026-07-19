@@ -94,6 +94,19 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		upstreamBody = normalizedBody
 	}
 
+	// 3b. 动态注入内部身份提示词（隐藏真实上游模型）。
+	// publicModel 必须来自服务端解析后的 ResolvedModel.PublicModel，
+	// 由 handler 在调用 ForwardAsChatCompletions 之前通过 c.Set 注入。
+	// 未注入时 fallback 到 originalModel（即 body.model，已被渠道映射改写为上游模型），
+	// 此时不注入提示词，保持向后兼容。
+	publicModel := getPublicModelFromContext(c)
+	if publicModel == "" {
+		publicModel = originalModel
+	}
+	if injected, injErr := injectIdentitySystemPrompt(upstreamBody, publicModel); injErr == nil {
+		upstreamBody = injected
+	}
+
 	// 4. Apply OpenAI fast policy on the CC body
 	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, upstreamBody)
 	if policyErr != nil {
@@ -255,6 +268,10 @@ func (s *OpenAIGatewayService) rawChatCompletionsURL(account *Account) (string, 
 // usage 字段仅在客户端请求 stream_options.include_usage=true 时出现于上游响应中。
 // 网关会对上游强制打开 include_usage 以保证计费完整，并原样向下游透传 usage，
 // 让级联代理或下游计费系统也能拿到完整用量。
+//
+// 脱敏：每个 SSE data: <json> 行在写出前都会被解析-修改-重新序列化，
+// 重写 model 字段为 publicModel 并删除 provider_specific_fields / metadata。
+// [DONE] 哨兵、注释行、event 行原样透传。
 func (s *OpenAIGatewayService) streamRawChatCompletions(
 	c *gin.Context,
 	resp *http.Response,
@@ -271,6 +288,13 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 	scanner := s.newUpstreamSSEScanner(resp.Body)
 
+	// publicModel 用于客户端响应的 model 字段（隐藏真实上游模型）。
+	// 优先从 gin.Context 读取（由 handler 注入）；未注入时 fallback 到 originalModel。
+	publicModel := getPublicModelFromContext(c)
+	if publicModel == "" {
+		publicModel = originalModel
+	}
+
 	var usage OpenAIUsage
 	var firstTokenMs *int
 	clientDisconnected := false
@@ -282,8 +306,11 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		if clientDisconnected {
 			return
 		}
+		// 在写出前对 SSE data 行做脱敏（重写 model、删除上游扩展字段）。
+		// 非 data 行（注释、event、空行）与 [DONE] 原样透传。
+		redactedLine := redactOpenAIChatSSELine(line, publicModel)
 		if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
-			pendingLines = append(pendingLines, line)
+			pendingLines = append(pendingLines, redactedLine)
 			return
 		}
 		if !clientOutputStarted {
@@ -301,7 +328,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			pendingLines = pendingLines[:0]
 			clientOutputStarted = true
 		}
-		if _, werr := c.Writer.WriteString(line + "\n"); werr != nil {
+		if _, werr := c.Writer.WriteString(redactedLine + "\n"); werr != nil {
 			clientDisconnected = true
 			logger.L().Debug("openai chat_completions raw: client disconnected, continuing to drain upstream for billing",
 				zap.Error(werr),
@@ -372,7 +399,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	return &OpenAIForwardResult{
 		RequestID:       requestID,
 		Usage:           usage,
-		Model:           originalModel,
+		Model:           publicModel,
 		BillingModel:    billingModel,
 		UpstreamModel:   upstreamModel,
 		ReasoningEffort: reasoningEffort,
@@ -419,7 +446,12 @@ func extractCCStreamUsage(payload string) *OpenAIUsage {
 	return &u
 }
 
-// bufferRawChatCompletions 透传上游 CC 非流式 JSON 响应。
+// bufferRawChatCompletions 透传上游 CC 非流式 JSON 响应，并在写出前做脱敏：
+//   - 重写顶层 model 字段为 publicModel（隐藏真实上游模型）
+//   - 删除 provider_specific_fields
+//   - 删除 metadata
+//
+// 保留标准 OpenAI 兼容字段：id / object / created / model / choices / usage。
 func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	c *gin.Context,
 	resp *http.Response,
@@ -445,6 +477,16 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		usage = parsedUsage
 	}
 
+	// publicModel 用于客户端响应的 model 字段（隐藏真实上游模型）。
+	// 优先从 gin.Context 读取（由 handler 注入）；未注入时 fallback 到 originalModel。
+	publicModel := getPublicModelFromContext(c)
+	if publicModel == "" {
+		publicModel = originalModel
+	}
+	// 脱敏：重写 model 字段、删除上游扩展字段。
+	// 解析失败时原样返回，避免破坏协议。
+	redactedBody := redactChatCompletionsResponse(respBody, publicModel)
+
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
@@ -454,12 +496,12 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		c.Writer.Header().Set("Content-Type", "application/json")
 	}
 	c.Writer.WriteHeader(http.StatusOK)
-	_, _ = c.Writer.Write(respBody)
+	_, _ = c.Writer.Write(redactedBody)
 
 	return &OpenAIForwardResult{
 		RequestID:       requestID,
 		Usage:           usage,
-		Model:           originalModel,
+		Model:           publicModel,
 		BillingModel:    billingModel,
 		UpstreamModel:   upstreamModel,
 		ReasoningEffort: reasoningEffort,

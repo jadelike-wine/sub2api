@@ -577,6 +577,7 @@ export default {
         providerTimeout: 'Generation timed out, please retry later',
         providerRateLimited: 'Upstream rate limited, please retry later',
         providerAuthFailed: 'Upstream authentication failed, please contact the admin',
+        credentialDecryptFailed: 'The image generation credential could not be decrypted. Please contact the administrator.',
         downloadFailed: 'Failed to download image, please retry later',
         storageFailed: 'Failed to store image, please contact the admin',
         invalidRequest: 'Invalid request parameters, please check and retry',

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/spf13/viper"
@@ -1505,6 +1506,51 @@ type TotpConfig struct {
 	EncryptionKeyConfigured bool `mapstructure:"-"`
 }
 
+// ServerModeRelease 是 gin/server 的 release 模式标识。
+const ServerModeRelease = "release"
+
+// isStrictEncryptionMode 判断当前是否应对 TOTP 加密密钥采用严格校验。
+//
+// 严格模式触发条件：
+//   - 服务以 release 模式运行（生产部署的默认模式，见 setDefaults 中 server.mode 默认值）
+//   - 且不在 Go testing 框架下（testing.Testing 在 Go 1.21+ 可用）
+//
+// 在严格模式下，TOTP_ENCRYPTION_KEY 缺失或非法将导致启动失败；
+// 非严格模式（debug 模式或测试环境）保留自动生成临时密钥的行为，便于本地开发与单元测试。
+//
+// 注意：此处不读取 APP_ENV 等额外环境变量，避免引入新的必填配置项；
+// 仅复用既有的 server.mode（默认 release）作为生产环境判定的权威信号。
+func isStrictEncryptionMode(serverMode string) bool {
+	if testing.Testing() {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(serverMode), ServerModeRelease)
+}
+
+// validateTotpEncryptionKey 在严格模式下校验 TOTP 加密密钥的格式与长度。
+// 返回非 nil error 时表示密钥不可用，调用方应中止启动。
+//
+// 校验规则（与 aes_encryptor.go NewAESEncryptor 保持一致）：
+//   - 非空
+//   - 合法 hex 编码
+//   - 解码后正好 32 字节（AES-256）
+//
+// 错误信息不包含密钥内容，仅描述问题类别，便于日志输出。
+func validateTotpEncryptionKey(keyHex string) error {
+	trimmed := strings.TrimSpace(keyHex)
+	if trimmed == "" {
+		return fmt.Errorf("TOTP_ENCRYPTION_KEY is required in release mode; configure it in /etc/sub2api/secrets.env (generate via `openssl rand -hex 32`)")
+	}
+	raw, err := hex.DecodeString(trimmed)
+	if err != nil {
+		return fmt.Errorf("TOTP_ENCRYPTION_KEY must be valid hex (64 hex chars for 32 bytes): %w", err)
+	}
+	if len(raw) != 32 {
+		return fmt.Errorf("TOTP_ENCRYPTION_KEY must decode to 32 bytes (AES-256), got %d bytes", len(raw))
+	}
+	return nil
+}
+
 type TurnstileConfig struct {
 	Required bool `mapstructure:"required"`
 }
@@ -1747,9 +1793,20 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Gateway.UserMessageQueue.Mode = ""
 	}
 
-	// Auto-generate TOTP encryption key if not set (32 bytes = 64 hex chars for AES-256)
+	// TOTP 加密密钥处理：
+	//   - release 模式（生产部署）：密钥缺失或格式非法 → 启动失败，避免随机生成导致历史密文无法解密
+	//   - debug / test 模式：保留自动生成行为，方便本地开发与单元测试
+	//
+	// 该密钥同时用于 TOTP secrets 与 image_provider_credentials.api_key_encrypted 的加解密，
+	// 一旦变更会导致历史密文不可解密，因此生产环境必须显式配置固定密钥
+	// （通常通过 /etc/sub2api/secrets.env 注入 TOTP_ENCRYPTION_KEY 环境变量）。
 	cfg.Totp.EncryptionKey = strings.TrimSpace(cfg.Totp.EncryptionKey)
-	if cfg.Totp.EncryptionKey == "" {
+	if isStrictEncryptionMode(cfg.Server.Mode) {
+		if err := validateTotpEncryptionKey(cfg.Totp.EncryptionKey); err != nil {
+			return nil, err
+		}
+		cfg.Totp.EncryptionKeyConfigured = true
+	} else if cfg.Totp.EncryptionKey == "" {
 		key, err := generateJWTSecret(32) // Reuse the same random generation function
 		if err != nil {
 			return nil, fmt.Errorf("generate totp encryption key error: %w", err)
@@ -1758,6 +1815,10 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Totp.EncryptionKeyConfigured = false
 		slog.Warn("TOTP encryption key auto-generated. Consider setting a fixed key for production.")
 	} else {
+		// debug/test 模式下用户显式配置了密钥，但仍需校验格式以避免 NewAESEncryptor 启动失败
+		if err := validateTotpEncryptionKey(cfg.Totp.EncryptionKey); err != nil {
+			return nil, err
+		}
 		cfg.Totp.EncryptionKeyConfigured = true
 	}
 

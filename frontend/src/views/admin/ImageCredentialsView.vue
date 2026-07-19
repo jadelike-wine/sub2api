@@ -487,6 +487,9 @@
             <dt class="text-gray-500 dark:text-dark-400">{{ t('admin.imageCredentials.test.errorCode') }}</dt>
             <dd class="text-gray-900 dark:text-white">{{ testResult.error_code || '—' }}</dd>
 
+            <dt class="text-gray-500 dark:text-dark-400">{{ t('admin.imageCredentials.test.reason') }}</dt>
+            <dd class="col-span-1 text-xs text-gray-900 dark:text-white">{{ testReasonLabel(testResult.reason) }}</dd>
+
             <dt class="text-gray-500 dark:text-dark-400">{{ t('admin.imageCredentials.test.errorMessage') }}</dt>
             <dd class="col-span-1 text-xs text-gray-900 dark:text-white">{{ testResult.error_message || '—' }}</dd>
           </template>
@@ -527,6 +530,10 @@ import type {
   TestImageCredentialResult,
   UpdateImageCredentialRequest,
 } from '@/types'
+import {
+  IMAGE_CREDENTIAL_TEST_REASON_NAMESPACE,
+  getImageCredentialTestReasonI18nKey,
+} from './imageCredentialTestReason'
 
 const { t } = useI18n()
 
@@ -931,12 +938,22 @@ async function onTestCredential(id: number) {
       http_status: 0,
       duration_ms: 0,
       error_code: 'CLIENT_ERROR',
+      reason: 'upstream_error',
       error_message: err instanceof Error ? err.message : String(err),
       key_fingerprint: '—',
     }
   } finally {
     testingId.value = null
   }
+}
+
+// testReasonLabel 将后端返回的结构化 reason 字段映射为本地化文案。
+// 前端不能仅凭 HTTP 200 判断测试成功，必须检查 testResult.success 和 reason 字段。
+// 后端 reason 取值：success | decrypt_failed | auth_failed | forbidden | rate_limited | timeout | upstream_error
+function testReasonLabel(reason?: string): string {
+  const key = getImageCredentialTestReasonI18nKey(reason)
+  if (!key) return '—'
+  return t(`${IMAGE_CREDENTIAL_TEST_REASON_NAMESPACE}.${key}`)
 }
 
 async function onDeleteCredential(cred: ImageProviderCredential) {

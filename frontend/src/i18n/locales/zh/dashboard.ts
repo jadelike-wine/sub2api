@@ -587,6 +587,7 @@ export default {
         providerTimeout: '生成超时，请稍后重试',
         providerRateLimited: '上游请求被限流，请稍后重试',
         providerAuthFailed: '上游凭据认证失败，请联系管理员',
+        credentialDecryptFailed: '生图凭据无法解密，请联系管理员重新配置凭据',
         downloadFailed: '图片下载失败，请稍后重试',
         storageFailed: '图片存储失败，请联系管理员',
         invalidRequest: '请求参数有误，请检查后重试',

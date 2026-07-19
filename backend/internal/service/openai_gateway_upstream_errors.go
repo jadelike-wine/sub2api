@@ -566,6 +566,9 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		upstreamMsg = fmt.Sprintf("Upstream error: %d", resp.StatusCode)
 	}
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	// 额外脱敏：把客户端可见错误消息中出现的真实上游模型名替换为 "model"。
+	// 服务端日志在 upstreamDetail 中保留原文（如启用 LogUpstreamErrorBody）。
+	upstreamMsg = redactUpstreamModelInMessage(upstreamMsg, getUpstreamModelFromContext(c))
 
 	upstreamDetail := ""
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {

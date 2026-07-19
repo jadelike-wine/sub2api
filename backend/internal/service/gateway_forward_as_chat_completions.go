@@ -44,6 +44,28 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	clientStream := ccReq.Stream
 	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
 
+	// 1b. 解析 publicModel 用于身份提示词注入和客户端响应脱敏。
+	// publicModel 必须来自服务端解析后的 ResolvedModel.PublicModel（由 handler 注入 gin.Context）。
+	// 未注入时 fallback 到 originalModel（保持向后兼容）。
+	publicModel := getPublicModelFromContext(c)
+	if publicModel == "" {
+		publicModel = originalModel
+	}
+
+	// 1c. 注入内部身份提示词（隐藏真实上游模型），位于客户端消息之前。
+	// 必须在 CC→Responses 转换之前注入，使身份提示词成为 messages[0]，
+	// 后续 ChatCompletionsToResponses 会自然保留这条消息。
+	// 不修改客户端原始 body，仅修改函数内 ccReq 副本。
+	if strings.TrimSpace(publicModel) != "" {
+		if contentBytes, mErr := json.Marshal(buildIdentitySystemPrompt(publicModel)); mErr == nil {
+			identityMsg := apicompat.ChatMessage{
+				Role:    "system",
+				Content: contentBytes,
+			}
+			ccReq.Messages = append([]apicompat.ChatMessage{identityMsg}, ccReq.Messages...)
+		}
+	}
+
 	// 2. Convert CC → Responses → Anthropic (chained conversion)
 	responsesReq, err := apicompat.ChatCompletionsToResponses(&ccReq)
 	if err != nil {
@@ -154,6 +176,8 @@ func (s *GatewayService) ForwardAsChatCompletions(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		// 额外脱敏：把客户端可见错误消息中出现的真实上游模型名替换为 "model"。
+		upstreamMsg = redactUpstreamModelInMessage(upstreamMsg, getUpstreamModelFromContext(c))
 
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -190,9 +214,9 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	var result *ForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleCCStreamingFromAnthropic(resp, c, originalModel, mappedModel, reasoningEffort, startTime, includeUsage)
+		result, handleErr = s.handleCCStreamingFromAnthropic(resp, c, originalModel, publicModel, mappedModel, reasoningEffort, startTime, includeUsage)
 	} else {
-		result, handleErr = s.handleCCBufferedFromAnthropic(resp, c, originalModel, mappedModel, reasoningEffort, startTime)
+		result, handleErr = s.handleCCBufferedFromAnthropic(resp, c, originalModel, publicModel, mappedModel, reasoningEffort, startTime)
 	}
 
 	return result, handleErr
@@ -218,10 +242,15 @@ func extractCCReasoningEffortFromBody(body []byte) *string {
 
 // handleCCBufferedFromAnthropic reads Anthropic SSE events, assembles the full
 // response, then converts Anthropic → Responses → Chat Completions.
+//
+// publicModel 用于客户端响应的 model 字段（隐藏真实上游模型）。
+// 必须来自服务端解析后的 ResolvedModel.PublicModel，不能使用 mappedModel 或 originalModel
+// （后者在 Anthropic CC 路径下可能是渠道映射后的模型名）。
 func (s *GatewayService) handleCCBufferedFromAnthropic(
 	resp *http.Response,
 	c *gin.Context,
 	originalModel string,
+	publicModel string,
 	mappedModel string,
 	reasoningEffort *string,
 	startTime time.Time,
@@ -317,7 +346,8 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 
 	// Chain: Anthropic → Responses → Chat Completions
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
-	ccResp := apicompat.ResponsesToChatCompletions(responsesResp, originalModel)
+	// 使用 publicModel 作为客户端响应的 model 字段，隐藏真实上游模型。
+	ccResp := apicompat.ResponsesToChatCompletions(responsesResp, publicModel)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -340,7 +370,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 	return &ForwardResult{
 		RequestID:       requestID,
 		Usage:           usage,
-		Model:           originalModel,
+		Model:           publicModel,
 		UpstreamModel:   mappedModel,
 		ReasoningEffort: reasoningEffort,
 		Stream:          false,
@@ -350,10 +380,15 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 
 // handleCCStreamingFromAnthropic reads Anthropic SSE events, converts each
 // to Responses events, then to Chat Completions chunks, and writes them.
+//
+// publicModel 用于客户端响应的 model 字段（隐藏真实上游模型）。
+// 必须来自服务端解析后的 ResolvedModel.PublicModel，不能使用 mappedModel 或 originalModel
+// （后者在 Anthropic CC 路径下可能是渠道映射后的模型名）。
 func (s *GatewayService) handleCCStreamingFromAnthropic(
 	resp *http.Response,
 	c *gin.Context,
 	originalModel string,
+	publicModel string,
 	mappedModel string,
 	reasoningEffort *string,
 	startTime time.Time,
@@ -371,10 +406,11 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	c.Writer.WriteHeader(http.StatusOK)
 
 	// Use Anthropic→Responses state machine, then convert Responses→CC
+	// 使用 publicModel 作为客户端响应的 model 字段，隐藏真实上游模型。
 	anthState := apicompat.NewAnthropicEventToResponsesState()
-	anthState.Model = originalModel
+	anthState.Model = publicModel
 	ccState := apicompat.NewResponsesEventToChatState()
-	ccState.Model = originalModel
+	ccState.Model = publicModel
 	ccState.IncludeUsage = includeUsage
 
 	var usage ClaudeUsage
@@ -392,7 +428,7 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 		return &ForwardResult{
 			RequestID:       requestID,
 			Usage:           usage,
-			Model:           originalModel,
+			Model:           publicModel,
 			UpstreamModel:   mappedModel,
 			ReasoningEffort: reasoningEffort,
 			Stream:          true,

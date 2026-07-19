@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
@@ -91,6 +92,20 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+
+	// 构造 ResolvedModel 并把 PublicModel 放入 gin.Context，供 service 层
+	// 动态注入身份提示词与对客户端响应做脱敏（隐藏真实上游模型名）。
+	// 同时存 UpstreamModel 供错误消息脱敏使用。
+	resolvedModel := service.BuildResolvedModel(reqModel, channelMapping)
+	// 防御提示词注入：拒绝包含控制字符/换行/空格的非法 model 名称，
+	// 避免恶意字符串被拼入身份提示词。校验失败返回标准 model_not_found。
+	if !service.ValidatePublicModel(resolvedModel.PublicModel) {
+		h.chatCompletionsErrorResponse(c, http.StatusNotFound, "invalid_request_error",
+			"Model not found: "+strings.TrimSpace(reqModel))
+		return
+	}
+	c.Set(service.ContextKeyPublicModel, resolvedModel.PublicModel)
+	c.Set(service.ContextKeyUpstreamModel, resolvedModel.UpstreamModel)
 
 	// Claude Code only restriction
 	if apiKey.Group != nil && apiKey.Group.ClaudeCodeOnly {

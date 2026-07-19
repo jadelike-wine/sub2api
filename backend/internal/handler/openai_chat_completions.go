@@ -101,6 +101,21 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
 
+	// 构造 ResolvedModel 并把 PublicModel 放入 gin.Context，供 service 层
+	// 动态注入身份提示词与对客户端响应做脱敏（隐藏真实上游模型名）。
+	// service 层未读到时 fallback 到 body.model，保持向后兼容。
+	// 同时存 UpstreamModel 供错误消息脱敏使用。
+	resolvedModel := service.BuildResolvedModel(reqModel, channelMapping)
+	// 防御提示词注入：拒绝包含控制字符/换行/空格的非法 model 名称，
+	// 避免恶意字符串被拼入身份提示词。校验失败返回标准 model_not_found。
+	if !service.ValidatePublicModel(resolvedModel.PublicModel) {
+		h.errorResponse(c, http.StatusNotFound, "invalid_request_error",
+			"Model not found: "+strings.TrimSpace(reqModel))
+		return
+	}
+	c.Set(service.ContextKeyPublicModel, resolvedModel.PublicModel)
+	c.Set(service.ContextKeyUpstreamModel, resolvedModel.UpstreamModel)
+
 	if h.errorPassthroughService != nil {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
 	}

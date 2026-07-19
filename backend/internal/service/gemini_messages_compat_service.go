@@ -1695,13 +1695,81 @@ func sleepGeminiBackoff(attempt int) {
 var (
 	sensitiveQueryParamRegex = regexp.MustCompile(`(?i)([?&](?:key|client_secret|access_token|refresh_token)=)[^&"\s]+`)
 	retryInRegex             = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
+
+	// 敏感凭证 / 上游定位信息脱敏正则：
+	// - Authorization Header（含 Bearer token）
+	// - API Key 片段（sk-... / sk-ant-... / 一般化的 key=...）
+	// - 完整的上游 Base URL（https://...）
+	// - deployment / region / account / endpoint 等 key=value 形式的定位信息
+	// 这些都不能透传给客户端，避免泄露上游身份或定位上游部署。
+	sensitiveUpstreamIdentityPatterns = []*regexp.Regexp{
+		// Authorization: Bearer xxx / Bearer xxx
+		regexp.MustCompile(`(?i)(Authorization\s*:\s*Bearer\s+)[A-Za-z0-9_\-\.\=]+`),
+		regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9_\-\.\=]{8,}`),
+		// sk-xxx / sk-ant-xxx 等 API Key 前缀片段
+		regexp.MustCompile(`(?i)\bsk-[A-Za-z0-9\-_]{8,}`),
+		// key=xxx / api_key=xxx / apikey=xxx / client_secret=xxx / access_token=xxx / refresh_token=xxx
+		regexp.MustCompile(`(?i)\b(?:api_?key|client_secret|access_token|refresh_token|token)\s*[=:]\s*['"]?[A-Za-z0-9_\-\.\=]{8,}`),
+		// 完整 https URL（避免泄露上游 Base URL）
+		regexp.MustCompile(`https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+`),
+		// deployment=xxx / region=xxx / account=xxx / endpoint=xxx 等 key=value 定位信息
+		regexp.MustCompile(`(?i)\b(?:deployment|region|account|endpoint|instance|provider)\s*[=:]\s*['"]?[A-Za-z0-9_\-\./]{1,}`),
+	}
 )
 
+// sanitizeUpstreamErrorMessage 对上游错误消息做脱敏，避免把上游凭证或定位信息透传给客户端。
+//
+// 当前覆盖：
+//   - Authorization / Bearer token
+//   - API Key 片段（sk-...）
+//   - query 参数中的 key/client_secret/access_token/refresh_token
+//   - 完整 https URL（避免泄露上游 Base URL）
+//   - deployment/region/account/endpoint 等 key=value 定位信息
+//
+// 不在此函数处理：
+//   - 实际上游模型名称（用 redactUpstreamModelInMessage 单独处理，避免误伤合法客户端消息）
+//   - 上游原始响应正文（由 extractUpstreamErrorMessage 仅提取 message 字段保证）
+//
+// 服务端内部日志可保留真实信息以便排障；此函数仅用于客户端可见的错误消息。
 func sanitizeUpstreamErrorMessage(msg string) string {
 	if msg == "" {
 		return msg
 	}
-	return sensitiveQueryParamRegex.ReplaceAllString(msg, `$1***`)
+	out := sensitiveQueryParamRegex.ReplaceAllString(msg, `$1***`)
+	for _, re := range sensitiveUpstreamIdentityPatterns {
+		out = re.ReplaceAllString(out, `***`)
+	}
+	return out
+}
+
+// redactUpstreamModelInMessage 在错误消息中把指定的上游模型名替换为 "model"，
+// 避免实际上游模型名（如 agnes-2.0-flash）通过错误响应泄露给客户端。
+//
+// 当 upstreamModel 为空时跳过（无映射场景无需脱敏）。
+// 大小写不敏感；按字面量匹配替换，不解析为正则。
+// 简单字符串替换足以覆盖上游模型名在错误消息中的常见出现形式
+// （"model X not found"、"model X is rate limited" 等）。
+func redactUpstreamModelInMessage(msg, upstreamModel string) string {
+	if msg == "" || strings.TrimSpace(upstreamModel) == "" {
+		return msg
+	}
+	// 大小写不敏感替换：先 ToLower 比较，命中则替换原长度。
+	lowerMsg := strings.ToLower(msg)
+	lowerModel := strings.ToLower(upstreamModel)
+	var out strings.Builder
+	out.Grow(len(msg))
+	i := 0
+	for i < len(lowerMsg) {
+		idx := strings.Index(lowerMsg[i:], lowerModel)
+		if idx < 0 {
+			out.WriteString(msg[i:])
+			break
+		}
+		out.WriteString(msg[i : i+idx])
+		out.WriteString("model")
+		i += idx + len(lowerModel)
+	}
+	return out.String()
 }
 
 func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, account *Account, upstreamStatus int, upstreamRequestID string, body []byte) error {

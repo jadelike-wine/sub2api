@@ -80,14 +80,38 @@ type UpdateCredentialRequest struct {
 }
 
 // TestCredentialResult 测试凭据连接的结果。
+//
+// 字段说明：
+//   - Success: 结构化成功标记。前端必须基于此字段（而非 HTTP 200）判断测试是否通过
+//   - ErrorCode: 兼容字段，保留历史大写格式（DECRYPT_FAILED/AUTH_FAILED/FORBIDDEN/...）
+//   - Reason: 标准化错误原因（小写下划线格式），新增字段，前端应优先使用
+//     取值：success / decrypt_failed / auth_failed / forbidden / rate_limited / upstream_error / timeout
+//   - HTTPStatus: 上游返回的 HTTP 状态码（解密失败时为 0）
+//
+// 解密失败与上游认证失败的区分：
+//   - decrypt_failed: 本地 AES 解密失败（密钥不匹配/密文损坏），不调用上游
+//   - auth_failed:    上游返回 401
+//   - forbidden:      上游返回 403
 type TestCredentialResult struct {
 	Success      bool   `json:"success"`
 	HTTPStatus   int    `json:"http_status"`
 	DurationMs   int    `json:"duration_ms"`
 	ErrorCode    string `json:"error_code,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 	Fingerprint  string `json:"key_fingerprint"`
 }
+
+// 凭据测试结果的原因常量（小写下划线格式，用于 TestCredentialResult.Reason）。
+const (
+	TestCredentialReasonSuccess       = "success"
+	TestCredentialReasonDecryptFailed = "decrypt_failed"
+	TestCredentialReasonAuthFailed    = "auth_failed"
+	TestCredentialReasonForbidden     = "forbidden"
+	TestCredentialReasonRateLimited   = "rate_limited"
+	TestCredentialReasonUpstreamError = "upstream_error"
+	TestCredentialReasonTimeout       = "timeout"
+)
 
 // ListCredentials 列出所有凭据（管理员视图）。
 func (s *ImageCredentialService) ListCredentials(ctx context.Context) ([]*CredentialDTO, error) {
@@ -220,9 +244,16 @@ func (s *ImageCredentialService) DeleteCredential(ctx context.Context, id int64)
 // 快速判断 key 有效性（无需等待真实生图，通常 < 2s，不消耗用户配额）。
 //
 // 判定逻辑：
-//   - 401/403 → key 无效（失败）
-//   - 其他状态码（含 503 model_not_found、5xx、超时）→ key 有效（通过鉴权）
-//   - 200 → key 有效（不应该发生，但以防万一当成功处理）
+//   - 解密失败 → decrypt_failed（本地问题，不调用上游）
+//   - 401 → auth_failed（上游认证失败）
+//   - 403 → forbidden（上游授权拒绝）
+//   - 429 → rate_limited（上游限流，但 key 本身有效）
+//   - 超时 → timeout（key 通过鉴权但响应超时）
+//   - 其他错误（含 503 model_not_found、5xx）→ upstream_error（key 有效但上游有问题）
+//   - 200 → success（不应该发生，但以防万一当成功处理）
+//
+// 前端必须检查 result.Success 字段（不能仅凭 HTTP 200 判断）。
+// 解密失败时不会调用 AgnesClient，避免无意义的网络请求。
 func (s *ImageCredentialService) TestCredential(ctx context.Context, id int64) (*TestCredentialResult, error) {
 	cred, err := s.repo.GetByID(ctx, id)
 	if err != nil {
@@ -232,9 +263,12 @@ func (s *ImageCredentialService) TestCredential(ctx context.Context, id int64) (
 	// 解密 Key
 	plain, err := s.encryptor.Decrypt(cred.ApiKeyEncrypted)
 	if err != nil {
+		// 解密失败：不调用上游，直接返回失败结果
+		// 日志不记录密文/密钥；error_message 仅描述类别，不含敏感信息
 		return &TestCredentialResult{
 			Success:      false,
 			ErrorCode:    "DECRYPT_FAILED",
+			Reason:       TestCredentialReasonDecryptFailed,
 			ErrorMessage: "failed to decrypt api key",
 			Fingerprint:  cred.KeyFingerprint,
 		}, nil
@@ -260,24 +294,62 @@ func (s *ImageCredentialService) TestCredential(ctx context.Context, id int64) (
 	durationMs := int(time.Since(start).Milliseconds())
 
 	if callErr != nil {
-		// 401/403 → key 无效
-		if httpStatus == 401 || httpStatus == 403 {
+		// 401 → auth_failed
+		if httpStatus == 401 {
 			return &TestCredentialResult{
 				Success:      false,
 				HTTPStatus:   httpStatus,
 				DurationMs:   durationMs,
-				ErrorCode:    "INVALID_KEY",
+				ErrorCode:    "AUTH_FAILED",
+				Reason:       TestCredentialReasonAuthFailed,
 				ErrorMessage: "API key is invalid or unauthorized",
 				Fingerprint:  cred.KeyFingerprint,
 			}, nil
 		}
-		// 其他错误（model_not_found 的 503、超时、5xx）→ key 有效但上游有问题
+		// 403 → forbidden
+		if httpStatus == 403 {
+			return &TestCredentialResult{
+				Success:      false,
+				HTTPStatus:   httpStatus,
+				DurationMs:   durationMs,
+				ErrorCode:    "FORBIDDEN",
+				Reason:       TestCredentialReasonForbidden,
+				ErrorMessage: "API key is forbidden",
+				Fingerprint:  cred.KeyFingerprint,
+			}, nil
+		}
+		// 429 → rate_limited（key 有效但被限流）
+		if httpStatus == 429 {
+			return &TestCredentialResult{
+				Success:      true,
+				HTTPStatus:   httpStatus,
+				DurationMs:   durationMs,
+				ErrorCode:    upstreamErrCode(httpStatus, callErr),
+				Reason:       TestCredentialReasonRateLimited,
+				ErrorMessage: sanitizeUpstreamErrorMessage(callErr.Error()),
+				Fingerprint:  cred.KeyFingerprint,
+			}, nil
+		}
+		// 超时 → timeout（key 通过鉴权但响应超时）
+		if isTimeoutErr(callErr) {
+			return &TestCredentialResult{
+				Success:      true,
+				HTTPStatus:   httpStatus,
+				DurationMs:   durationMs,
+				ErrorCode:    upstreamErrCode(httpStatus, callErr),
+				Reason:       TestCredentialReasonTimeout,
+				ErrorMessage: sanitizeUpstreamErrorMessage(callErr.Error()),
+				Fingerprint:  cred.KeyFingerprint,
+			}, nil
+		}
+		// 其他错误（model_not_found 的 503、5xx、网络错误）→ key 有效但上游有问题
 		// 因为 Agnes 先鉴权后处理，只要不是 401/403 就说明 key 通过了鉴权
 		return &TestCredentialResult{
 			Success:      true,
 			HTTPStatus:   httpStatus,
 			DurationMs:   durationMs,
 			ErrorCode:    upstreamErrCode(httpStatus, callErr),
+			Reason:       TestCredentialReasonUpstreamError,
 			ErrorMessage: sanitizeUpstreamErrorMessage(callErr.Error()),
 			Fingerprint:  cred.KeyFingerprint,
 		}, nil
@@ -288,6 +360,7 @@ func (s *ImageCredentialService) TestCredential(ctx context.Context, id int64) (
 		Success:     true,
 		HTTPStatus:  httpStatus,
 		DurationMs:  durationMs,
+		Reason:      TestCredentialReasonSuccess,
 		Fingerprint: cred.KeyFingerprint,
 	}, nil
 }

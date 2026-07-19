@@ -108,6 +108,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	originalModel := chatReq.Model
 	clientStream := chatReq.Stream
 
+	// 1b. 解析 publicModel 用于身份提示词注入和客户端响应脱敏。
+	// publicModel 必须来自服务端解析后的 ResolvedModel.PublicModel（由 handler 注入 gin.Context）。
+	// 未注入时 fallback 到 originalModel（保持向后兼容）。
+	publicModel := getPublicModelFromContext(c)
+	if publicModel == "" {
+		publicModel = originalModel
+	}
+
 	// 2. Resolve model mapping early so compat prompt_cache_key injection can
 	// derive a stable seed from the final upstream model family.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
@@ -170,6 +178,21 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	} else {
 		// Normal path: convert Chat Completions → Responses.
 		// ChatCompletionsToResponses always sets Stream=true (upstream always streams).
+
+		// 注入内部身份提示词（隐藏真实上游模型），位于客户端消息之前。
+		// 必须在 CC→Responses 转换之前注入，使身份提示词成为 messages[0]，
+		// 后续 ChatCompletionsToResponses 会自然保留这条消息。
+		// 不修改客户端原始 body，仅修改函数内 chatReq 副本。
+		if publicModel != "" {
+			if contentBytes, mErr := json.Marshal(buildIdentitySystemPrompt(publicModel)); mErr == nil {
+				identityMsg := apicompat.ChatMessage{
+					Role:    "system",
+					Content: contentBytes,
+				}
+				chatReq.Messages = append([]apicompat.ChatMessage{identityMsg}, chatReq.Messages...)
+			}
+		}
+
 		responsesReq, err = apicompat.ChatCompletionsToResponses(&chatReq)
 		if err != nil {
 			return nil, fmt.Errorf("convert chat completions to responses: %w", err)
@@ -415,6 +438,13 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
+	// publicModel 用于客户端响应的 model 字段（隐藏真实上游模型）。
+	// 优先从 gin.Context 读取（由 handler 注入）；未注入时 fallback 到 originalModel。
+	publicModel := getPublicModelFromContext(c)
+	if publicModel == "" {
+		publicModel = originalModel
+	}
+
 	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, "openai chat_completions buffered", requestID)
 	if err != nil {
 		return nil, err
@@ -469,7 +499,8 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	// accumulated delta events so the client receives the full content.
 	acc.SupplementResponseOutput(finalResponse)
 
-	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
+	// 使用 publicModel 作为客户端响应的 model 字段，隐藏真实上游模型。
+	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, publicModel)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -484,7 +515,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	return &OpenAIForwardResult{
 		RequestID:     requestID,
 		Usage:         usage,
-		Model:         originalModel,
+		Model:         publicModel,
 		BillingModel:  billingModel,
 		UpstreamModel: upstreamModel,
 		Stream:        false,
@@ -507,8 +538,15 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 
+	// publicModel 用于客户端响应的 model 字段（隐藏真实上游模型）。
+	// 优先从 gin.Context 读取（由 handler 注入）；未注入时 fallback 到 originalModel。
+	publicModel := getPublicModelFromContext(c)
+	if publicModel == "" {
+		publicModel = originalModel
+	}
+
 	state := apicompat.NewResponsesEventToChatState()
-	state.Model = originalModel
+	state.Model = publicModel
 	// 网关作为计费链路的一环，不能把下游 usage 输出绑定到客户端是否显式请求。
 	// raw Chat Completions 直转路径已经强制透出 usage，这里保持同样行为，避免级联代理计费为 0。
 	state.IncludeUsage = true
@@ -543,7 +581,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		return &OpenAIForwardResult{
 			RequestID:     requestID,
 			Usage:         usage,
-			Model:         originalModel,
+			Model:         publicModel,
 			BillingModel:  billingModel,
 			UpstreamModel: upstreamModel,
 			Stream:        true,

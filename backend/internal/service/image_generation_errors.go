@@ -69,6 +69,24 @@ func errImageNoAvailableCredential() *ImageGenError {
 	return infraerrors.New(http.StatusServiceUnavailable, "IMAGE_NO_AVAILABLE_CREDENTIAL", "no healthy upstream credential available")
 }
 
+// errImageCredentialDecryptFailed 表示本地 AES 解密失败。
+//
+// 触发场景：
+//   - TOTP_ENCRYPTION_KEY 与加密时使用的密钥不一致（如服务重启后随机生成了新密钥）
+//   - 数据库中 api_key_encrypted 字段被篡改或截断
+//   - 加密密钥配置丢失
+//
+// 这类错误与上游 401/403 无关，必须独立区分：
+//   - 不能映射为 IMAGE_PROVIDER_AUTH_FAILED（上游认证失败）
+//   - 不能记录为上游 AUTH_FAILED/FORBIDDEN 状态
+//   - 不能触发 AgnesClient 调用（解密失败时根本没有明文 Key 可用）
+//   - 不能更新凭据为 unhealthy（解密失败是本地配置问题，不是凭据本身的问题）
+//
+// 前端映射为独立的 i18n 文案，提示用户联系管理员重新配置凭据。
+func errImageCredentialDecryptFailed() *ImageGenError {
+	return infraerrors.New(http.StatusServiceUnavailable, "IMAGE_CREDENTIAL_DECRYPT_FAILED", "image credential decryption failed")
+}
+
 func errImageProviderTimeout() *ImageGenError {
 	return infraerrors.New(http.StatusGatewayTimeout, "IMAGE_PROVIDER_TIMEOUT", "upstream image generation timed out")
 }

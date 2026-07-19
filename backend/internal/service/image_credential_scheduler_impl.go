@@ -95,14 +95,28 @@ func (s *agnesCredentialScheduler) SelectAndGenerate(ctx context.Context, req Ag
 	}
 
 	// 解密所有候选的 API Key（仅在此处临时持有明文，不返回、不记录日志）
+	// 跟踪解密失败的凭据数量，用于在所有候选都解密失败时返回独立的错误码
+	decryptFailures := 0
 	for _, c := range candidates {
 		plain, derr := s.encryptor.Decrypt(c.ApiKeyEncrypted)
 		if derr != nil {
-			slog.Warn("image credential decrypt failed, skipping", "credential_id", c.ID, "error", derr)
+			// 仅记录 credential_id 和错误类型，不记录密文/密钥
+			slog.Warn("image credential decrypt failed, skipping",
+				"credential_id", c.ID,
+				"error_type", "decrypt_failed",
+				"error", derr)
 			c.ApiKeyPlain = ""
+			decryptFailures++
 			continue
 		}
 		c.ApiKeyPlain = plain
+	}
+
+	// 所有候选都解密失败 → 返回 IMAGE_CREDENTIAL_DECRYPT_FAILED
+	// 不返回 IMAGE_NO_AVAILABLE_CREDENTIAL（凭据本身是存在的，只是本地解密失败）
+	// 不返回 IMAGE_PROVIDER_AUTH_FAILED（与上游认证无关）
+	if decryptFailures == len(candidates) {
+		return 0, nil, errImageCredentialDecryptFailed()
 	}
 
 	// 全局 round-robin 起点
@@ -174,8 +188,15 @@ func (s *agnesCredentialScheduler) SelectAndGenerate(ctx context.Context, req Ag
 		// 可重试：切换下一把 Key
 	}
 
+	// 如果所有可解密候选都被尝试且都失败，使用 lastErr
+	// 如果 lastErr 为 nil（maxAttempts=0 或无可解密候选），优先返回 DECRYPT_FAILED
+	// （仅当确实存在解密失败时），否则返回 NO_AVAILABLE_CREDENTIAL
 	if lastErr == nil {
-		lastErr = errImageNoAvailableCredential()
+		if decryptFailures > 0 {
+			lastErr = errImageCredentialDecryptFailed()
+		} else {
+			lastErr = errImageNoAvailableCredential()
+		}
 	}
 	return 0, nil, lastErr
 }
@@ -242,20 +263,30 @@ func (s *agnesCredentialScheduler) TryAcquireCredential(ctx context.Context) (in
 // credentialID 必须通过 TryAcquireCredential 获得（调用方负责 release）。
 // 失败时返回 ImageGenError，调用方决定是否换 Key 重试。
 // 本方法不负责 release，调用方在使用完后必须显式调用 release()。
+//
+// 解密失败的特殊处理：
+//   - 本地 AES 解密失败属于配置/数据完整性问题，与上游认证失败有本质区别
+//   - 返回独立的 IMAGE_CREDENTIAL_DECRYPT_FAILED 错误码（不映射为 IMAGE_PROVIDER_AUTH_FAILED）
+//   - 不调用 AgnesClient（无明文 Key 可用）
+//   - 不更新凭据健康状态（不污染 unhealthy 计数和冷却时间）
+//   - 错误码可重试（其他能正常解密的凭据仍可被尝试）
 func (s *agnesCredentialScheduler) GenerateWithCredential(ctx context.Context, credentialID int64, req AgnesGenerateRequest) (*AgnesGenerateResult, error) {
 	cred, err := s.repo.GetByID(ctx, credentialID)
 	if err != nil {
 		return nil, errImageProviderError("failed to load credential: " + err.Error()).WithCause(err)
 	}
 	if !cred.Enabled {
-		return nil, errImageProviderAuthFailed()
+		return nil, errImageNoAvailableCredential()
 	}
 
 	plain, derr := s.encryptor.Decrypt(cred.ApiKeyEncrypted)
 	if derr != nil {
+		// 解密失败：仅记录 credential_id 和错误类型，绝不记录密文、密钥、Authorization Header
 		slog.Warn("image credential decrypt failed in GenerateWithCredential",
-			"credential_id", credentialID, "error", derr)
-		return nil, errImageProviderAuthFailed().WithCause(derr)
+			"credential_id", credentialID,
+			"error_type", "decrypt_failed",
+			"error", derr)
+		return nil, errImageCredentialDecryptFailed().WithCause(derr)
 	}
 
 	opts := AgnesCallOptions{

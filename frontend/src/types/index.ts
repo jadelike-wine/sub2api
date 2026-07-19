@@ -2319,6 +2319,15 @@ export interface TestImageCredentialResult {
   duration_ms: number
   error_code?: string
   error_message?: string
+  // 结构化失败原因（前端必须基于此字段而非 HTTP 200 判断测试是否通过）：
+  // - success:      凭据有效，上游正常响应
+  // - decrypt_failed: 本地 AES 解密失败（密钥不匹配/密文损坏），未调用上游
+  // - auth_failed:  上游返回 401，凭据无效
+  // - forbidden:    上游返回 403，凭据被禁用
+  // - rate_limited: 上游返回 429，凭据有效但被限流
+  // - timeout:      上游响应超时（凭据本身通过鉴权）
+  // - upstream_error: 其他上游错误（5xx/网络），凭据本身通过鉴权
+  reason?: 'success' | 'decrypt_failed' | 'auth_failed' | 'forbidden' | 'rate_limited' | 'timeout' | 'upstream_error'
   key_fingerprint: string
 }
 

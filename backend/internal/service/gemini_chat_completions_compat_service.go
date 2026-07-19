@@ -126,6 +126,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		if err != nil {
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
+			safeErr = redactUpstreamModelInMessage(safeErr, getUpstreamModelFromContext(c))
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -795,6 +796,9 @@ func (s *GeminiMessagesCompatService) writeGeminiChatCompletionsMappedError(
 	body []byte,
 ) error {
 	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	// 额外脱敏：把客户端可见错误消息中出现的真实上游模型名替换为 "model"。
+	// 与 OpenAI / Anthropic CC 路径保持一致，避免 Gemini 错误响应中泄露上游模型名。
+	upstreamMsg = redactUpstreamModelInMessage(upstreamMsg, getUpstreamModelFromContext(c))
 	setOpsUpstreamError(c, upstreamStatus, upstreamMsg, "")
 	if account != nil {
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
