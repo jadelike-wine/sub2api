@@ -363,7 +363,7 @@ func TestRunCheckForModel_MergeMode_UserFieldsWinButDenyListProtects(t *testing.
 		BodyOverrideMode: MonitorBodyOverrideModeMerge,
 		BodyOverride: map[string]any{
 			"system":     "You are Claude Code...",
-			"max_tokens": float64(999),   // 应该覆盖默认 512
+			"max_tokens": float64(999),   // 应该覆盖默认 50
 			"model":      "hacked-model", // 应该被黑名单挡住，保留原 model
 			"messages":   []any{},        // 同上，被挡
 		},
@@ -452,18 +452,19 @@ func TestRunCheckForModel_ReplaceMode_EmptyResponseIsFailed(t *testing.T) {
 	}
 }
 
-// TestMonitorChallengeMaxTokens_DefaultIs512 验证默认 challenge 请求体的 max_tokens 已提升为 512。
-// 回归 Agnes agnes-2.0-flash 误报：默认 max_tokens=50 时 reasoning 会把预算耗光，
-// 导致 content 为空 + finish_reason=length，监控误记为 challenge mismatch。
+// TestMonitorChallengeMaxTokens_DefaultIs50 验证默认 challenge 请求体的 max_tokens 为 50。
+// 与 runChecksConcurrent 中强制注入的 chat_template_kwargs.enable_thinking=false 配合：
+// 关闭 reasoning 后 arithmetic challenge 答案只需 1-2 个 token 即可返回，无需为
+// reasoning_content 预留大预算。
 //
 // 覆盖全部 4 种 adapter：
-//   - OpenAI Chat Completions: max_tokens=512
-//   - Grok Chat Completions:   max_tokens=512
-//   - Anthropic Messages:      max_tokens=512
-//   - OpenAI Responses:        max_output_tokens=512（注意字段名不同）
-func TestMonitorChallengeMaxTokens_DefaultIs512(t *testing.T) {
-	if monitorChallengeMaxTokens != 512 {
-		t.Fatalf("monitorChallengeMaxTokens const should be 512, got %d", monitorChallengeMaxTokens)
+//   - OpenAI Chat Completions: max_tokens=50
+//   - Grok Chat Completions:   max_tokens=50
+//   - Anthropic Messages:      max_tokens=50
+//   - OpenAI Responses:        max_output_tokens=50（注意字段名不同）
+func TestMonitorChallengeMaxTokens_DefaultIs50(t *testing.T) {
+	if monitorChallengeMaxTokens != 50 {
+		t.Fatalf("monitorChallengeMaxTokens const should be 50, got %d", monitorChallengeMaxTokens)
 	}
 
 	cases := []struct {
@@ -497,7 +498,7 @@ func TestMonitorChallengeMaxTokens_DefaultIs512(t *testing.T) {
 			bodyField: "max_tokens",
 		},
 		{
-			name: "openai responses",
+			name:     "openai responses",
 			provider: MonitorProviderOpenAI,
 			model:    "gpt-test",
 			opts: &CheckOptions{
@@ -534,8 +535,8 @@ func TestMonitorChallengeMaxTokens_DefaultIs512(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s: expected %s to be number, got %T (%v)", tc.name, tc.bodyField, body[tc.bodyField], body[tc.bodyField])
 			}
-			if int(got) != 512 {
-				t.Fatalf("%s: expected %s=512, got %v", tc.name, tc.bodyField, got)
+			if int(got) != 50 {
+				t.Fatalf("%s: expected %s=50, got %v", tc.name, tc.bodyField, got)
 			}
 		})
 	}
@@ -630,7 +631,8 @@ func TestRunCheckForModel_ReasoningTruncation_ReturnsExplicitMessage(t *testing.
 }
 
 // TestRunCheckForModel_NormalResponseWithAnswerIsOperational 验证带正确答案的正常响应仍为 operational，
-// 并回归默认 max_tokens=512（修复后 Agnes 在合理预算下能返回 content）。
+// 并回归默认 max_tokens=50（与 runChecksConcurrent 中强制注入的 chat_template_kwargs.enable_thinking=false
+// 配合，关闭 reasoning 后小预算即可返回 content）。
 func TestRunCheckForModel_NormalResponseWithAnswerIsOperational(t *testing.T) {
 	// openAICaptureHandler 默认按 challenge 算式回正确答案到 choices.0.message.content
 	h := &openAICaptureHandler{}
@@ -645,8 +647,8 @@ func TestRunCheckForModel_NormalResponseWithAnswerIsOperational(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected max_tokens to be number, got %T (%v)", h.lastBody["max_tokens"], h.lastBody["max_tokens"])
 	}
-	if int(mt) != 512 {
-		t.Errorf("expected default max_tokens=512, got %v", mt)
+	if int(mt) != 50 {
+		t.Errorf("expected default max_tokens=50, got %v", mt)
 	}
 }
 
@@ -696,5 +698,151 @@ func TestChallengeMismatchMessage_FallbackToGeneric(t *testing.T) {
 				t.Fatalf("expected message to contain %q, got %q", tc.wantSub, got)
 			}
 		})
+	}
+}
+
+// TestApplyDefaultThinkingOverride 验证 runChecksConcurrent 默认注入
+// chat_template_kwargs.enable_thinking=false 的行为：
+//   - nil opts 不 panic
+//   - replace 模式跳过注入（保留用户全权自管 body 的语义）
+//   - off / 空 / merge 模式统一改写为 merge，并注入 enable_thinking=false
+//   - 用户已有的 chat_template_kwargs.enable_thinking 优先（不被覆盖）
+//   - 用户已有的 chat_template_kwargs 其他字段保留
+func TestApplyDefaultThinkingOverride(t *testing.T) {
+	t.Run("nil opts is no-op", func(t *testing.T) {
+		applyDefaultThinkingOverride(nil)
+		// 不 panic 即通过
+	})
+
+	t.Run("replace mode skips injection", func(t *testing.T) {
+		opts := &CheckOptions{
+			BodyOverrideMode: MonitorBodyOverrideModeReplace,
+			BodyOverride:     map[string]any{"model": "x", "messages": []any{}},
+		}
+		applyDefaultThinkingOverride(opts)
+		if opts.BodyOverrideMode != MonitorBodyOverrideModeReplace {
+			t.Fatalf("replace mode must be preserved, got %q", opts.BodyOverrideMode)
+		}
+		if _, ok := opts.BodyOverride["chat_template_kwargs"]; ok {
+			t.Fatal("replace mode must not inject chat_template_kwargs")
+		}
+	})
+
+	t.Run("off mode is rewritten to merge with injection", func(t *testing.T) {
+		opts := &CheckOptions{
+			BodyOverrideMode: MonitorBodyOverrideModeOff,
+		}
+		applyDefaultThinkingOverride(opts)
+		if opts.BodyOverrideMode != MonitorBodyOverrideModeMerge {
+			t.Fatalf("off mode should be rewritten to merge, got %q", opts.BodyOverrideMode)
+		}
+		cfg, ok := opts.BodyOverride["chat_template_kwargs"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected chat_template_kwargs map injected, got %T", opts.BodyOverride["chat_template_kwargs"])
+		}
+		if cfg["enable_thinking"] != false {
+			t.Errorf("expected enable_thinking=false, got %v", cfg["enable_thinking"])
+		}
+	})
+
+	t.Run("empty mode is rewritten to merge with injection", func(t *testing.T) {
+		opts := &CheckOptions{}
+		applyDefaultThinkingOverride(opts)
+		if opts.BodyOverrideMode != MonitorBodyOverrideModeMerge {
+			t.Fatalf("empty mode should be rewritten to merge, got %q", opts.BodyOverrideMode)
+		}
+		if _, ok := opts.BodyOverride["chat_template_kwargs"]; !ok {
+			t.Fatal("expected chat_template_kwargs injected for empty mode")
+		}
+	})
+
+	t.Run("merge mode preserves existing enable_thinking=true", func(t *testing.T) {
+		opts := &CheckOptions{
+			BodyOverrideMode: MonitorBodyOverrideModeMerge,
+			BodyOverride: map[string]any{
+				"chat_template_kwargs": map[string]any{"enable_thinking": true},
+			},
+		}
+		applyDefaultThinkingOverride(opts)
+		cfg, ok := opts.BodyOverride["chat_template_kwargs"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected chat_template_kwargs map preserved, got %T", opts.BodyOverride["chat_template_kwargs"])
+		}
+		if cfg["enable_thinking"] != true {
+			t.Errorf("user-provided enable_thinking=true must win, got %v", cfg["enable_thinking"])
+		}
+	})
+
+	t.Run("merge mode preserves existing chat_template_kwargs siblings", func(t *testing.T) {
+		opts := &CheckOptions{
+			BodyOverrideMode: MonitorBodyOverrideModeMerge,
+			BodyOverride: map[string]any{
+				"chat_template_kwargs": map[string]any{"temperature": float64(0.7)},
+			},
+		}
+		applyDefaultThinkingOverride(opts)
+		cfg, ok := opts.BodyOverride["chat_template_kwargs"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected chat_template_kwargs map preserved, got %T", opts.BodyOverride["chat_template_kwargs"])
+		}
+		if cfg["temperature"] != float64(0.7) {
+			t.Errorf("user-provided temperature must be preserved, got %v", cfg["temperature"])
+		}
+		if cfg["enable_thinking"] != false {
+			t.Errorf("expected enable_thinking=false injected, got %v", cfg["enable_thinking"])
+		}
+	})
+
+	t.Run("merge mode preserves other user override fields", func(t *testing.T) {
+		opts := &CheckOptions{
+			BodyOverrideMode: MonitorBodyOverrideModeMerge,
+			BodyOverride: map[string]any{
+				"max_tokens": float64(100),
+				"system":     "you are a monitor",
+			},
+		}
+		applyDefaultThinkingOverride(opts)
+		if opts.BodyOverride["max_tokens"] != float64(100) {
+			t.Errorf("user max_tokens must be preserved, got %v", opts.BodyOverride["max_tokens"])
+		}
+		if opts.BodyOverride["system"] != "you are a monitor" {
+			t.Errorf("user system must be preserved, got %v", opts.BodyOverride["system"])
+		}
+	})
+}
+
+// TestRunChecksConcurrent_InjectsDisableThinkingOverride 是端到端验证：
+// 通过 ChannelMonitorService.runChecksConcurrent 触发的请求必须包含
+// chat_template_kwargs.enable_thinking=false（用户未显式配置时）。
+func TestRunChecksConcurrent_InjectsDisableThinkingOverride(t *testing.T) {
+	h := &openAICaptureHandler{}
+	endpoint := setupFakeOpenAI(t, h)
+
+	svc := &ChannelMonitorService{}
+	monitor := &ChannelMonitor{
+		ID:               1,
+		Provider:         MonitorProviderOpenAI,
+		Endpoint:         endpoint,
+		APIKey:           "sk-fake",
+		PrimaryModel:     "gpt-test",
+		BodyOverrideMode: MonitorBodyOverrideModeOff,
+	}
+
+	_ = svc.runChecksConcurrent(context.Background(), monitor)
+
+	if h.lastBody == nil {
+		t.Fatal("expected request body captured, got nil (handler never called?)")
+	}
+	cfg, ok := h.lastBody["chat_template_kwargs"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected chat_template_kwargs injected into request body, got %T (%v)",
+			h.lastBody["chat_template_kwargs"], h.lastBody["chat_template_kwargs"])
+	}
+	if cfg["enable_thinking"] != false {
+		t.Errorf("expected enable_thinking=false in request body, got %v", cfg["enable_thinking"])
+	}
+	// monitorChallengeMaxTokens=50 也应一并出现在请求体中
+	if mt, ok := h.lastBody["max_tokens"].(float64); !ok || int(mt) != 50 {
+		t.Errorf("expected max_tokens=50, got %v", h.lastBody["max_tokens"])
 	}
 }

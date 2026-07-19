@@ -481,6 +481,13 @@ func (s *ChannelMonitorService) runChecksConcurrent(ctx context.Context, m *Chan
 		BodyOverrideMode: m.BodyOverrideMode,
 		BodyOverride:     m.BodyOverride,
 	}
+	// 默认强制注入 chat_template_kwargs.enable_thinking=false（关闭 reasoning）：
+	//   - replace 模式下用户完全自管 body，跳过注入以保留其语义
+	//   - off/merge 模式统一改写为 merge 模式，并把 enable_thinking=false 合并进 BodyOverride
+	//     （用户已有的 chat_template_kwargs.enable_thinking 优先）
+	// 这样 arithmetic challenge 在关闭 reasoning 后只需极少 token 即可返回答案，
+	// 与 monitorChallengeMaxTokens=50 配合避免 reasoning_content 占满预算的误报。
+	applyDefaultThinkingOverride(opts)
 
 	var eg errgroup.Group
 	var mu sync.Mutex

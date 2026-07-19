@@ -151,6 +151,47 @@ func bodyOverrideMode(opts *CheckOptions) string {
 	return opts.BodyOverrideMode
 }
 
+// applyDefaultThinkingOverride 在 runChecksConcurrent 构造完 opts 后调用，
+// 把「关闭 reasoning」的默认配置注入到 opts 中：
+//
+//   - replace 模式：用户完全自管 body，跳过注入（保留 replace 语义）
+//   - off / merge / 空串：统一改写为 merge 模式，并把 chat_template_kwargs.enable_thinking=false
+//     深度合并到 BodyOverride 中；用户已有的 chat_template_kwargs.enable_thinking 优先
+//
+// 与 monitorChallengeMaxTokens=50 配合：关闭 reasoning 后 arithmetic challenge
+// 只需极少 token 即可返回，避免 reasoning_content 占满预算导致 finish_reason=length 误报。
+func applyDefaultThinkingOverride(opts *CheckOptions) {
+	if opts == nil {
+		return
+	}
+	if opts.BodyOverrideMode == MonitorBodyOverrideModeReplace {
+		return
+	}
+	opts.BodyOverrideMode = MonitorBodyOverrideModeMerge
+	opts.BodyOverride = injectDisableThinkingOverride(opts.BodyOverride)
+}
+
+// injectDisableThinkingOverride 把 chat_template_kwargs.enable_thinking=false
+// 深度合并到已有 BodyOverride 中。用户已有的 chat_template_kwargs.enable_thinking 优先。
+//
+// 注意：chat_template_kwargs 是 OpenAI 兼容上游（如 vLLM 部署的 Qwen / GLM / DeepSeek 等）
+// 用于控制 chat template 渲染参数的字段；对 Anthropic / Gemini 等非兼容上游会被 merge
+// 进 body 但上游通常忽略未知字段，不会引发错误。
+func injectDisableThinkingOverride(existing map[string]any) map[string]any {
+	out := make(map[string]any, len(existing)+1)
+	for k, v := range existing {
+		out[k] = v
+	}
+	if cfg, ok := out["chat_template_kwargs"].(map[string]any); ok && cfg != nil {
+		if _, set := cfg["enable_thinking"]; !set {
+			cfg["enable_thinking"] = false
+		}
+		return out
+	}
+	out["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
+	return out
+}
+
 // pingEndpointOrigin 对 endpoint 的 origin (scheme://host) 发起 HEAD 请求，返回耗时。
 // 失败时返回 nil（不影响主状态判定）。
 func pingEndpointOrigin(ctx context.Context, endpoint string) *int {
