@@ -133,9 +133,18 @@ export async function listGenerations(
 
 /**
  * Get a single generation by ID (includes output_assets with presigned URLs).
+ *
+ * @param options.signal - Optional AbortSignal for cancellation
+ * @param options.timeout - Optional per-request timeout in ms (overrides default 30s)
  */
-export async function getGeneration(id: number): Promise<ImageGeneration> {
-  const { data } = await apiClient.get<ImageGeneration>(`/image-generations/${id}`)
+export async function getGeneration(
+  id: number,
+  options?: { signal?: AbortSignal; timeout?: number }
+): Promise<ImageGeneration> {
+  const { data } = await apiClient.get<ImageGeneration>(`/image-generations/${id}`, {
+    signal: options?.signal,
+    timeout: options?.timeout,
+  })
   return data
 }
 

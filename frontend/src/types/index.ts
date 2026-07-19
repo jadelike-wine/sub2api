@@ -2150,10 +2150,15 @@ export type ImageGenerationType = 'text_to_image' | 'image_to_image'
 
 export type ImageGenerationStatus =
   | 'pending'
+  | 'queued'
   | 'processing'
   | 'succeeded'
   | 'failed'
   | 'canceled'
+  // 前端虚拟状态：当任务长时间停留在 queued/pending/processing 或连续轮询失败
+  // 超过阈值时由 store 标记为 'timeout'，停止轮询并提示用户重试。
+  // 后端不会返回该状态，仅在 generations[].status 上本地写入。
+  | 'timeout'
 
 export type ImageAssetType = 'input' | 'output' | 'thumbnail'
 

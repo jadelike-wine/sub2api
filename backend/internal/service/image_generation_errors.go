@@ -30,6 +30,12 @@ var ErrImageGenerationNotFound = infraerrors.New(http.StatusNotFound, "IMAGE_GEN
 // 由 repository.CreateIfUnderUserConcurrency 在并发检查失败时返回。
 var ErrImageConcurrentLimitReached = infraerrors.New(http.StatusConflict, "IMAGE_CONCURRENT_LIMIT", "image generation concurrency limit reached for user")
 
+// ErrImageTaskAlreadyRunning 当目标会话已存在一个"有效"生图任务
+// （pending/queued/processing/succeeded）时返回。
+// 由 repository.CreateIfUnderUserConcurrency 在会话级单轮校验失败时返回。
+// failed/canceled 状态视为终态失败，允许用户在同一会话重试。
+var ErrImageTaskAlreadyRunning = infraerrors.New(http.StatusConflict, "IMAGE_TASK_ALREADY_RUNNING", "a generation task already exists in this conversation")
+
 // ErrAllCredentialsBusy 当所有可用凭据都被占用时返回（区别于"无健康凭据"）。
 // 调用方应将任务放入 queued 队列等待调度，而非标记失败。
 var ErrAllCredentialsBusy = errors.New("all available credentials are busy")
@@ -121,10 +127,6 @@ func errImageConversationNotFound() *ImageGenError {
 
 func errImageAccessDenied() *ImageGenError {
 	return infraerrors.New(http.StatusForbidden, "IMAGE_ACCESS_DENIED", "you do not have access to this resource")
-}
-
-func errImageTaskAlreadyRunning() *ImageGenError {
-	return infraerrors.New(http.StatusConflict, "IMAGE_TASK_ALREADY_RUNNING", "a generation task is already running in this conversation")
 }
 
 func errImageDisabled() *ImageGenError {

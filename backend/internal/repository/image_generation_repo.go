@@ -251,21 +251,19 @@ func (r *imageGenerationRepository) SoftDelete(ctx context.Context, userID, id i
 	return nil
 }
 
-// CreateIfUnderUserConcurrency 在事务内原子地检查用户活跃任务数并创建新任务。
+// CreateIfUnderUserConcurrency 在事务内原子地检查用户活跃任务数、会话单轮约束并创建新任务。
 //
 // 使用 pg_advisory_xact_lock(user_id) 序列化同一用户的并发创建请求，
-// 在同一事务内 count(pending+queued+processing) + insert，避免竞态。
-// 当活跃任务数 >= maxConcurrent 时返回 ErrImageConcurrentLimitReached。
-// maxConcurrent <= 0 时退化为普通 Create（不检查并发）。
+// 在同一事务内完成两项检查 + insert，避免竞态：
+//  1. 用户级并发检查：count(pending+queued+processing) >= maxConcurrent 时返回 ErrImageConcurrentLimitReached。
+//  2. 会话级单轮检查：count(pending+queued+processing+succeeded) > 0 时返回 ErrImageTaskAlreadyRunning。
+//     failed/canceled 视为终态失败，允许用户在同一会话重试。
 //
-// 非 PostgreSQL 环境下退化为普通 Create（跳过 advisory lock）。
+// maxConcurrent <= 0 时跳过用户级并发检查（仍执行会话级单轮检查）。
+// 非 PostgreSQL 环境下退化为普通 Create（跳过 advisory lock 与会话级检查）。
 func (r *imageGenerationRepository) CreateIfUnderUserConcurrency(ctx context.Context, params service.CreateImageGenerationParams, maxConcurrent int) (*service.ImageGeneration, error) {
-	// maxConcurrent <= 0：不启用并发检查，退化为普通 Create
-	if maxConcurrent <= 0 {
-		return r.Create(ctx, params)
-	}
-
 	// 非 PostgreSQL 或无 sql.DB：退化为普通 Create（无法做 advisory lock）
+	// 会话级单轮检查依赖事务内的 count + insert 原子性，非 PG 环境无法保证，跳过。
 	if r.db == nil || r.client.Driver().Dialect() != "postgres" {
 		return r.Create(ctx, params)
 	}
@@ -283,16 +281,28 @@ func (r *imageGenerationRepository) CreateIfUnderUserConcurrency(ctx context.Con
 		return nil, fmt.Errorf("acquire advisory lock for user %d: %w", params.UserID, err)
 	}
 
-	// 在锁内 count 活跃任务（pending + queued + processing）
-	// 使用软删除过滤（image_generations 表无软删除，但保险起见保持一致）
-	var activeCount int
-	countQuery := `SELECT COUNT(*) FROM image_generations WHERE user_id = $1 AND status IN ('pending', 'queued', 'processing')`
-	if err := tx.QueryRowContext(ctx, countQuery, params.UserID).Scan(&activeCount); err != nil {
-		return nil, fmt.Errorf("count active generations for user %d: %w", params.UserID, err)
+	// 检查 1：用户级并发上限（仅当 maxConcurrent > 0 时启用）
+	if maxConcurrent > 0 {
+		var activeCount int
+		countQuery := `SELECT COUNT(*) FROM image_generations WHERE user_id = $1 AND status IN ('pending', 'queued', 'processing')`
+		if err := tx.QueryRowContext(ctx, countQuery, params.UserID).Scan(&activeCount); err != nil {
+			return nil, fmt.Errorf("count active generations for user %d: %w", params.UserID, err)
+		}
+		if activeCount >= maxConcurrent {
+			return nil, service.ErrImageConcurrentLimitReached
+		}
 	}
 
-	if activeCount >= maxConcurrent {
-		return nil, service.ErrImageConcurrentLimitReached
+	// 检查 2：会话级单轮约束
+	// 只要该会话已存在 pending/queued/processing/succeeded 状态的任务，就拒绝再次创建。
+	// failed/canceled 视为终态失败，允许在同一会话重试（创建新记录）。
+	var convActiveCount int
+	convCountQuery := `SELECT COUNT(*) FROM image_generations WHERE user_id = $1 AND conversation_id = $2 AND status IN ('pending', 'queued', 'processing', 'succeeded')`
+	if err := tx.QueryRowContext(ctx, convCountQuery, params.UserID, params.ConversationID).Scan(&convActiveCount); err != nil {
+		return nil, fmt.Errorf("count generations in conversation %d: %w", params.ConversationID, err)
+	}
+	if convActiveCount > 0 {
+		return nil, service.ErrImageTaskAlreadyRunning
 	}
 
 	// 在同一事务内插入新任务

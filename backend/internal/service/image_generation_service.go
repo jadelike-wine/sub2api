@@ -257,9 +257,12 @@ func (s *ImageGenerationService) CreateGeneration(ctx context.Context, userID in
 		}
 	}
 
-	// 5. 创建 generation 记录（带用户级并发检查）
+	// 5. 创建 generation 记录（带用户级并发检查 + 会话级单轮检查）
 	//    直接创建为 queued 状态：进入调度队列等待 Token 空闲。
-	//    并发检查统计 pending+queued+processing，由 Repository 在事务内 advisory lock 保护避免竞态。
+	//    Repository 在事务内 advisory lock 保护下完成两项检查：
+	//      a) 用户级并发：pending+queued+processing >= maxConcurrent → ErrImageConcurrentLimitReached
+	//      b) 会话级单轮：conversation 已存在 pending/queued/processing/succeeded → ErrImageTaskAlreadyRunning
+	//    failed/canceled 视为终态失败，允许在同一会话重试。
 	var idemKey *string
 	if req.IdempotencyKey != "" {
 		idemKey = &req.IdempotencyKey

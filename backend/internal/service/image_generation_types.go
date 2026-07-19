@@ -214,10 +214,12 @@ type ImageConversationRepository interface {
 // 所有查询必须附带 user_id 条件，避免越权访问。
 type ImageGenerationRepository interface {
 	Create(ctx context.Context, params CreateImageGenerationParams) (*ImageGeneration, error)
-	// CreateIfUnderUserConcurrency 在事务内原子地检查用户活跃任务数并创建新任务。
+	// CreateIfUnderUserConcurrency 在事务内原子地检查用户活跃任务数、会话单轮约束并创建新任务。
 	// 使用 pg_advisory_xact_lock(user_id) 序列化同一用户的并发创建请求。
-	// 当活跃任务数（pending+queued+processing）>= maxConcurrent 时返回 ErrImageConcurrentLimitReached。
-	// maxConcurrent <= 0 时退化为普通 Create（不检查并发）。
+	// 检查 1：活跃任务数（pending+queued+processing）>= maxConcurrent 时返回 ErrImageConcurrentLimitReached。
+	// 检查 2：会话已存在 pending/queued/processing/succeeded 任务时返回 ErrImageTaskAlreadyRunning。
+	// maxConcurrent <= 0 时跳过检查 1（仍执行检查 2）。
+	// 非 PostgreSQL 环境退化为普通 Create（跳过两项检查）。
 	CreateIfUnderUserConcurrency(ctx context.Context, params CreateImageGenerationParams, maxConcurrent int) (*ImageGeneration, error)
 	GetByIDForOwner(ctx context.Context, userID, id int64) (*ImageGeneration, error)
 	GetByID(ctx context.Context, id int64) (*ImageGeneration, error)

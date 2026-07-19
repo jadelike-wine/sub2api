@@ -766,3 +766,251 @@ func TestImageGenConcurrent_NonRetryableError_MarksFailedImmediately(t *testing.
 	require.NotNil(t, upd.ErrorCode)
 	require.Equal(t, "IMAGE_INVALID_REQUEST", *upd.ErrorCode)
 }
+
+// =====================================================================
+// 会话级单轮约束测试（IMAGE_TASK_ALREADY_RUNNING）
+//
+// 覆盖用户提出的 6 个场景中的后端部分：
+//   1. 空会话首次提交成功
+//   2. 已有 processing 任务时再次提交返回 409
+//   3. 已有 succeeded 任务时再次提交返回 409
+//   4. 快速双击只创建一个任务（第二次返回 409）
+//   5. 两个并发请求只能有一个成功
+// failed/canceled 状态允许在同一会话重试（补充场景）
+// =====================================================================
+
+// makeSingleRoundReq 构造一个最小的 text-to-image 请求用于单轮约束测试。
+func makeSingleRoundReq(prompt string) CreateGenerationRequest {
+	return CreateGenerationRequest{
+		Type:   ImageGenerationTypeTextToImage,
+		Prompt: prompt,
+		Size:   "2K",
+		Ratio:  "1:1",
+	}
+}
+
+// assertImageTaskAlreadyRunningErr 断言错误是 409 IMAGE_TASK_ALREADY_RUNNING。
+func assertImageTaskAlreadyRunningErr(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	var appErr *infraerrors.ApplicationError
+	require.ErrorAs(t, err, &appErr)
+	require.Equal(t, int32(409), appErr.Code, "expected HTTP 409")
+	require.Equal(t, "IMAGE_TASK_ALREADY_RUNNING", appErr.Reason)
+}
+
+// --- 场景 1：空会话首次提交成功 ---
+
+func TestImageGenSingleRound_EmptyConversation_CreateSucceeds(t *testing.T) {
+	cfg := defaultTestImageGenConfig()
+	svc, genRepo, sched, _ := newTestImageGenService(t, cfg)
+
+	// Repository 默认放行（无已有任务），scheduler 调用成功
+	sched.acquireOk = true
+	sched.hasAvailable = true
+	sched.genResult = &AgnesGenerateResult{B64JSON: testImageB64, MimeType: "image/png"}
+
+	gen, err := svc.CreateGeneration(context.Background(), 1, makeSingleRoundReq("apple"))
+	require.NoError(t, err)
+	require.NotNil(t, gen)
+	require.Equal(t, ImageStatusQueued, gen.Status)
+	require.Equal(t, 1, genRepo.createCalls, "first submission should reach repository")
+}
+
+// --- 场景 2：已有 processing 任务时再次提交返回 409 ---
+
+func TestImageGenSingleRound_ProcessingExists_Returns409(t *testing.T) {
+	cfg := defaultTestImageGenConfig()
+	svc, genRepo, _, _ := newTestImageGenService(t, cfg)
+
+	// Repository 模拟会话已存在 processing 任务
+	genRepo.createFn = func(ctx context.Context, params CreateImageGenerationParams, maxConcurrent int) (*ImageGeneration, error) {
+		return nil, ErrImageTaskAlreadyRunning
+	}
+
+	gen, err := svc.CreateGeneration(context.Background(), 1, makeSingleRoundReq("banana"))
+	require.Nil(t, gen)
+	assertImageTaskAlreadyRunningErr(t, err)
+	require.Equal(t, 1, genRepo.createCalls, "should attempt create and be rejected")
+}
+
+// --- 场景 3：已有 succeeded 任务时再次提交返回 409 ---
+
+func TestImageGenSingleRound_SucceededExists_Returns409(t *testing.T) {
+	cfg := defaultTestImageGenConfig()
+	svc, genRepo, _, _ := newTestImageGenService(t, cfg)
+
+	// Repository 模拟会话已存在 succeeded 任务（同一会话不允许再生成）
+	genRepo.createFn = func(ctx context.Context, params CreateImageGenerationParams, maxConcurrent int) (*ImageGeneration, error) {
+		return nil, ErrImageTaskAlreadyRunning
+	}
+
+	gen, err := svc.CreateGeneration(context.Background(), 1, makeSingleRoundReq("banana"))
+	require.Nil(t, gen)
+	assertImageTaskAlreadyRunningErr(t, err)
+}
+
+// --- 场景 4：快速双击只创建一个任务 ---
+//
+// service 层不做串行化（依赖 repository 的事务+advisory lock），
+// 此处验证：第二次调用 createFn 时返回 409，service 层正确向上传递错误。
+
+func TestImageGenSingleRound_DoubleSubmit_SecondCallReturns409(t *testing.T) {
+	cfg := defaultTestImageGenConfig()
+	svc, genRepo, sched, _ := newTestImageGenService(t, cfg)
+
+	// 第一次创建成功，第二次返回 409（模拟 repository 在事务内发现已有任务）
+	var callCount int32
+	genRepo.createFn = func(ctx context.Context, params CreateImageGenerationParams, maxConcurrent int) (*ImageGeneration, error) {
+		if atomic.AddInt32(&callCount, 1) == 1 {
+			return &ImageGeneration{
+				ID:             1,
+				UserID:         params.UserID,
+				ConversationID: params.ConversationID,
+				Status:         ImageStatusQueued,
+				CreatedAt:      time.Now(),
+				UpdatedAt:      time.Now(),
+			}, nil
+		}
+		return nil, ErrImageTaskAlreadyRunning
+	}
+
+	sched.acquireOk = true
+	sched.hasAvailable = true
+	sched.genResult = &AgnesGenerateResult{B64JSON: testImageB64, MimeType: "image/png"}
+
+	// 第一次提交：成功
+	gen1, err1 := svc.CreateGeneration(context.Background(), 1, makeSingleRoundReq("apple"))
+	require.NoError(t, err1)
+	require.NotNil(t, gen1)
+	require.Equal(t, int32(1), atomic.LoadInt32(&callCount))
+
+	// 第二次提交：返回 409
+	gen2, err2 := svc.CreateGeneration(context.Background(), 1, makeSingleRoundReq("banana"))
+	require.Nil(t, gen2)
+	assertImageTaskAlreadyRunningErr(t, err2)
+	require.Equal(t, int32(2), atomic.LoadInt32(&callCount), "second call should reach repository and be rejected")
+}
+
+// --- 场景 5：两个并发请求只能有一个成功 ---
+//
+// 模拟两个 goroutine 同时调用 CreateGeneration：
+//   - 第一个进入 createFn 时通过 barrier 阻塞，等待第二个到达
+//   - 两个都到达后放行，第一个返回成功，第二个返回 ErrImageTaskAlreadyRunning
+// 验证 service 层不会将第二个错误吞掉或转换为其他错误。
+
+func TestImageGenSingleRound_ConcurrentRequests_OnlyOneSucceeds(t *testing.T) {
+	cfg := defaultTestImageGenConfig()
+	svc, genRepo, sched, _ := newTestImageGenService(t, cfg)
+
+	// barrier：两个 goroutine 都到达 createFn 后才放行
+	barrier := make(chan struct{})
+	once := sync.Once{}
+	var firstDone int32
+
+	genRepo.createFn = func(ctx context.Context, params CreateImageGenerationParams, maxConcurrent int) (*ImageGeneration, error) {
+		// 第一个到达者等待第二个到达，确保并发
+		once.Do(func() {
+			// 等待另一个 goroutine 也调用到 createFn
+			<-barrier
+		})
+		// 同时唤醒两个（once.Do 只执行一次，但第二个 goroutine 也会通过 channel）
+		select {
+		case <-barrier:
+		default:
+		}
+
+		if atomic.AddInt32(&firstDone, 1) == 1 {
+			// 第一个完成创建
+			return &ImageGeneration{
+				ID:             1,
+				UserID:         params.UserID,
+				ConversationID: params.ConversationID,
+				Status:         ImageStatusQueued,
+				CreatedAt:      time.Now(),
+				UpdatedAt:      time.Now(),
+			}, nil
+		}
+		// 第二个：模拟 repository 在事务内发现已有任务
+		return nil, ErrImageTaskAlreadyRunning
+	}
+
+	sched.acquireOk = true
+	sched.hasAvailable = true
+	sched.genResult = &AgnesGenerateResult{B64JSON: testImageB64, MimeType: "image/png"}
+
+	// 启动 barrier 释放协程：在两个 goroutine 都到达后放行
+	go func() {
+		// 给两个 goroutine 时间进入 createFn
+		time.Sleep(50 * time.Millisecond)
+		// 关闭 barrier 唤醒所有等待者
+		close(barrier)
+	}()
+
+	var wg sync.WaitGroup
+	var err1, err2 error
+	var gen1, gen2 *ImageGeneration
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		gen1, err1 = svc.CreateGeneration(context.Background(), 1, makeSingleRoundReq("apple"))
+	}()
+	go func() {
+		defer wg.Done()
+		gen2, err2 = svc.CreateGeneration(context.Background(), 1, makeSingleRoundReq("banana"))
+	}()
+	wg.Wait()
+
+	// 恰好一个成功、一个返回 409（顺序无关）
+	successCount := 0
+	conflictCount := 0
+	for _, err := range []error{err1, err2} {
+		if err == nil {
+			successCount++
+		} else if appErr, ok := err.(*infraerrors.ApplicationError); ok &&
+			appErr.Code == 409 && appErr.Reason == "IMAGE_TASK_ALREADY_RUNNING" {
+			conflictCount++
+		}
+	}
+	require.Equal(t, 1, successCount, "exactly one request should succeed")
+	require.Equal(t, 1, conflictCount, "exactly one request should return 409 IMAGE_TASK_ALREADY_RUNNING")
+
+	// 验证只有一个 generation 被创建
+	require.Equal(t, 2, genRepo.createCalls, "both requests should reach repository (serialized by advisory lock)")
+	_ = gen1
+	_ = gen2
+}
+
+// --- 补充场景：failed 状态允许在同一会话重试 ---
+
+func TestImageGenSingleRound_FailedAllowed_RetrySucceeds(t *testing.T) {
+	cfg := defaultTestImageGenConfig()
+	svc, _, sched, _ := newTestImageGenService(t, cfg)
+
+	// Repository 默认放行（模拟 failed 状态不阻塞新任务）
+	sched.acquireOk = true
+	sched.hasAvailable = true
+	sched.genResult = &AgnesGenerateResult{B64JSON: testImageB64, MimeType: "image/png"}
+
+	gen, err := svc.CreateGeneration(context.Background(), 1, makeSingleRoundReq("retry after fail"))
+	require.NoError(t, err)
+	require.NotNil(t, gen)
+	require.Equal(t, ImageStatusQueued, gen.Status)
+}
+
+// --- 补充场景：canceled 状态允许在同一会话重试 ---
+
+func TestImageGenSingleRound_CanceledAllowed_RetrySucceeds(t *testing.T) {
+	cfg := defaultTestImageGenConfig()
+	svc, _, sched, _ := newTestImageGenService(t, cfg)
+
+	sched.acquireOk = true
+	sched.hasAvailable = true
+	sched.genResult = &AgnesGenerateResult{B64JSON: testImageB64, MimeType: "image/png"}
+
+	gen, err := svc.CreateGeneration(context.Background(), 1, makeSingleRoundReq("retry after cancel"))
+	require.NoError(t, err)
+	require.NotNil(t, gen)
+	require.Equal(t, ImageStatusQueued, gen.Status)
+}

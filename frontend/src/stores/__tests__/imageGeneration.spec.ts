@@ -1,12 +1,30 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
 
-import type { ImageAsset } from '@/types'
+import type { ImageAsset, ImageGeneration } from '@/types'
 import {
   extractObjectKey,
   assetStableKey,
   isSignedURLExpiringSoon,
   mergeAssetURLs,
+  useImageGenerationStore,
 } from '@/stores/imageGeneration'
+
+// ============================================================================
+// Mock imageGeneration API
+// ============================================================================
+
+const mockCreateGeneration = vi.fn()
+const mockGetConversation = vi.fn()
+
+vi.mock('@/api/imageGeneration', () => ({
+  default: {
+    createGeneration: (...args: any[]) => mockCreateGeneration(...args),
+    getConversation: (...args: any[]) => mockGetConversation(...args),
+    listConversations: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 }),
+    listGenerationsByConversation: vi.fn().mockResolvedValue([]),
+  },
+}))
 
 // ============================================================================
 // 测试辅助
@@ -308,5 +326,309 @@ describe('mergeAssetURLs', () => {
     const next = [makeAsset({ id: 1, url: `${samePath}?expires=${NEW_EXPIRES}&signature=new` })]
     const merged = mergeAssetURLs(old, next)!
     expect(merged[0].url).toBe(old[0].url) // 保留旧
+  })
+})
+
+// ============================================================================
+// createGeneration store action — 会话级单轮约束（IMAGE_TASK_ALREADY_RUNNING）
+//
+// 覆盖用户提出的 6 个场景中的前端部分：
+//   1. 空会话首次提交成功
+//   2. 已有 processing 任务时再次提交被前端拦截（不发起请求）
+//   3. 已有 succeeded 任务时再次提交被前端拦截（不发起请求）
+//   4. 快速双击只创建一个任务（creatingGeneration 标志位）
+//   5. 两个并发请求只能有一个到达 API（creatingGeneration 标志位）
+//   6. 后端返回 409 时：不新增生成卡片、不启动轮询
+// failed/canceled 状态允许在同一会话重试（补充场景）
+// ============================================================================
+
+/** 构造一个最小可用的 ImageGeneration */
+function makeGen(overrides: Partial<ImageGeneration> = {}): ImageGeneration {
+  return {
+    id: 1,
+    conversation_id: 1,
+    provider: 'agnes',
+    generation_type: 'text_to_image',
+    prompt: 'test',
+    size: '2K',
+    ratio: '1:1',
+    status: 'queued',
+    duration_ms: 0,
+    created_at: '2026-07-18T00:00:00Z',
+    updated_at: '2026-07-18T00:00:00Z',
+    ...overrides,
+  }
+}
+
+/** 构造 409 错误（与 axios 拦截器抛出的错误形状一致） */
+function make409Error() {
+  return {
+    status: 409,
+    code: 'IMAGE_TASK_ALREADY_RUNNING',
+    reason: 'IMAGE_TASK_ALREADY_RUNNING',
+    message: 'a generation task already exists in this conversation',
+  }
+}
+
+describe('useImageGenerationStore — createGeneration 会话级单轮约束', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  // --- 场景 1：空会话首次提交成功 ---
+
+  it('场景1：空会话首次提交成功，调用 API 并 upsert generation', async () => {
+    const store = useImageGenerationStore()
+    const createdGen = makeGen({ id: 100, status: 'queued' })
+    mockCreateGeneration.mockResolvedValue(createdGen)
+    mockGetConversation.mockResolvedValue({ id: 1, title: 'test' })
+
+    // draft 状态：currentConversation 为 null
+    const gen = await store.createGeneration({
+      type: 'text_to_image',
+      prompt: 'apple',
+      size: '2K',
+      ratio: '1:1',
+    })
+
+    expect(gen).toEqual(createdGen)
+    expect(mockCreateGeneration).toHaveBeenCalledTimes(1)
+    expect(store.generations).toHaveLength(1)
+    expect(store.generations[0].id).toBe(100)
+    // queued 状态应启动轮询
+    expect(store.hasActiveGeneration).toBe(true)
+  })
+
+  // --- 场景 2：已有 processing 任务时再次提交被前端拦截 ---
+
+  it('场景2：已有 processing 任务时再次提交被前端拦截，不发起请求', async () => {
+    const store = useImageGenerationStore()
+    // 模拟选中会话且已有 processing 任务
+    store.currentConversation = { id: 1, title: 'apple' } as any
+    store.generations = [makeGen({ id: 1, status: 'processing' })]
+
+    const err = await store
+      .createGeneration({ type: 'text_to_image', prompt: 'banana', size: '2K', ratio: '1:1' })
+      .catch((e) => e)
+
+    expect(err).toBeDefined()
+    expect(err.status).toBe(409)
+    expect(err.reason).toBe('IMAGE_TASK_ALREADY_RUNNING')
+    // API 不应被调用
+    expect(mockCreateGeneration).not.toHaveBeenCalled()
+    // generations 列表不变（不新增卡片）
+    expect(store.generations).toHaveLength(1)
+    expect(store.generations[0].id).toBe(1)
+  })
+
+  // --- 场景 3：已有 succeeded 任务时再次提交被前端拦截 ---
+
+  it('场景3：已有 succeeded 任务时再次提交被前端拦截，不发起请求', async () => {
+    const store = useImageGenerationStore()
+    store.currentConversation = { id: 1, title: 'apple' } as any
+    store.generations = [makeGen({ id: 1, status: 'succeeded' })]
+
+    const err = await store
+      .createGeneration({ type: 'text_to_image', prompt: 'banana', size: '2K', ratio: '1:1' })
+      .catch((e) => e)
+
+    expect(err).toBeDefined()
+    expect(err.status).toBe(409)
+    expect(err.reason).toBe('IMAGE_TASK_ALREADY_RUNNING')
+    expect(mockCreateGeneration).not.toHaveBeenCalled()
+    expect(store.generations).toHaveLength(1)
+  })
+
+  // --- 场景 4：快速双击只创建一个任务（creatingGeneration 标志位） ---
+
+  it('场景4：快速双击只创建一个任务，第二次直接抛 409', async () => {
+    const store = useImageGenerationStore()
+    const createdGen = makeGen({ id: 100, status: 'queued' })
+
+    // 让 API 调用 hang 住，模拟请求未返回时第二次调用进来
+    let resolveApi: (v: ImageGeneration) => void = () => {}
+    mockCreateGeneration.mockImplementation(
+      () =>
+        new Promise<ImageGeneration>((resolve) => {
+          resolveApi = resolve
+        })
+    )
+    mockGetConversation.mockResolvedValue({ id: 1, title: 'test' })
+
+    // 第一次调用：发起请求，进入 pending 状态
+    const p1 = store.createGeneration({
+      type: 'text_to_image',
+      prompt: 'apple',
+      size: '2K',
+      ratio: '1:1',
+    })
+
+    // 第二次调用：第一次还没返回，应被 creatingGeneration 标志位拦截
+    const err2 = await store
+      .createGeneration({ type: 'text_to_image', prompt: 'banana', size: '2K', ratio: '1:1' })
+      .catch((e) => e)
+
+    expect(err2).toBeDefined()
+    expect(err2.status).toBe(409)
+    expect(err2.reason).toBe('IMAGE_TASK_ALREADY_RUNNING')
+    // 第二次调用不应再触发 API
+    expect(mockCreateGeneration).toHaveBeenCalledTimes(1)
+
+    // 释放第一次请求
+    resolveApi(createdGen)
+    const gen1 = await p1
+    expect(gen1.id).toBe(100)
+  })
+
+  // --- 场景 5：两个并发请求只能有一个到达 API ---
+
+  it('场景5：两个并发请求只能有一个到达 API', async () => {
+    const store = useImageGenerationStore()
+    const createdGen = makeGen({ id: 100, status: 'queued' })
+
+    let resolveApi: (v: ImageGeneration) => void = () => {}
+    mockCreateGeneration.mockImplementation(
+      () =>
+        new Promise<ImageGeneration>((resolve) => {
+          resolveApi = resolve
+        })
+    )
+    mockGetConversation.mockResolvedValue({ id: 1, title: 'test' })
+
+    // 同时发起两个请求
+    const p1 = store.createGeneration({
+      type: 'text_to_image',
+      prompt: 'apple',
+      size: '2K',
+      ratio: '1:1',
+    })
+    const p2 = store
+      .createGeneration({
+        type: 'text_to_image',
+        prompt: 'banana',
+        size: '2K',
+        ratio: '1:1',
+      })
+      .catch((e) => e)
+
+    // 等所有微任务结束
+    const err2 = await p2
+    expect(err2).toBeDefined()
+    expect(err2.status).toBe(409)
+    expect(mockCreateGeneration).toHaveBeenCalledTimes(1)
+
+    // 释放第一个请求
+    resolveApi(createdGen)
+    const gen1 = await p1
+    expect(gen1.id).toBe(100)
+  })
+
+  // --- 场景 6：后端返回 409 时，不新增生成卡片、不启动轮询 ---
+
+  it('场景6：后端返回 409 时，不新增生成卡片、不启动轮询', async () => {
+    const store = useImageGenerationStore()
+    // 注意：此处 currentConversation 必须为 null（draft），
+    // 否则会被前端预校验拦截而不会到达 API。
+    // 模拟后端在事务内发现已有任务，返回 409。
+    mockCreateGeneration.mockRejectedValue(make409Error())
+
+    const err = await store
+      .createGeneration({ type: 'text_to_image', prompt: 'apple', size: '2K', ratio: '1:1' })
+      .catch((e) => e)
+
+    expect(err).toBeDefined()
+    expect(err.status).toBe(409)
+    expect(mockCreateGeneration).toHaveBeenCalledTimes(1)
+    // 关键断言：不新增生成卡片
+    expect(store.generations).toHaveLength(0)
+    // 关键断言：不启动轮询
+    expect(store.hasActiveGeneration).toBe(false)
+    expect(store.activeGenerationIds.size).toBe(0)
+    // creatingGeneration 已复位（finally 块执行）
+    expect(store.creatingGeneration).toBe(false)
+  })
+
+  // --- 补充场景：failed 状态允许在同一会话重试 ---
+
+  it('补充：failed 状态允许在同一会话重试，不被前端预校验拦截', async () => {
+    const store = useImageGenerationStore()
+    store.currentConversation = { id: 1, title: 'apple' } as any
+    // 会话已有 failed 任务（视为终态失败，允许重试）
+    store.generations = [makeGen({ id: 1, status: 'failed' })]
+
+    const createdGen = makeGen({ id: 2, status: 'queued' })
+    mockCreateGeneration.mockResolvedValue(createdGen)
+    mockGetConversation.mockResolvedValue({ id: 1, title: 'apple' })
+
+    const gen = await store.createGeneration({
+      type: 'text_to_image',
+      prompt: 'retry',
+      size: '2K',
+      ratio: '1:1',
+      conversation_id: 1,
+    })
+
+    expect(gen.id).toBe(2)
+    expect(mockCreateGeneration).toHaveBeenCalledTimes(1)
+    // generations 列表新增了一条（重试记录）
+    expect(store.generations).toHaveLength(2)
+  })
+
+  // --- 补充场景：canceled 状态允许在同一会话重试 ---
+
+  it('补充：canceled 状态允许在同一会话重试，不被前端预校验拦截', async () => {
+    const store = useImageGenerationStore()
+    store.currentConversation = { id: 1, title: 'apple' } as any
+    store.generations = [makeGen({ id: 1, status: 'canceled' })]
+
+    const createdGen = makeGen({ id: 2, status: 'queued' })
+    mockCreateGeneration.mockResolvedValue(createdGen)
+    mockGetConversation.mockResolvedValue({ id: 1, title: 'apple' })
+
+    const gen = await store.createGeneration({
+      type: 'text_to_image',
+      prompt: 'retry after cancel',
+      size: '2K',
+      ratio: '1:1',
+      conversation_id: 1,
+    })
+
+    expect(gen.id).toBe(2)
+    expect(mockCreateGeneration).toHaveBeenCalledTimes(1)
+    expect(store.generations).toHaveLength(2)
+  })
+
+  // --- 补充场景：hasActiveOrSucceededGeneration getter 行为 ---
+
+  it('补充：hasActiveOrSucceededGeneration 正确识别各种状态', () => {
+    const store = useImageGenerationStore()
+
+    // 空列表 → false
+    expect(store.hasActiveOrSucceededGeneration).toBe(false)
+
+    // pending → true
+    store.generations = [makeGen({ id: 1, status: 'pending' })]
+    expect(store.hasActiveOrSucceededGeneration).toBe(true)
+
+    // queued → true
+    store.generations = [makeGen({ id: 1, status: 'queued' })]
+    expect(store.hasActiveOrSucceededGeneration).toBe(true)
+
+    // processing → true
+    store.generations = [makeGen({ id: 1, status: 'processing' })]
+    expect(store.hasActiveOrSucceededGeneration).toBe(true)
+
+    // succeeded → true
+    store.generations = [makeGen({ id: 1, status: 'succeeded' })]
+    expect(store.hasActiveOrSucceededGeneration).toBe(true)
+
+    // failed → false（允许重试）
+    store.generations = [makeGen({ id: 1, status: 'failed' })]
+    expect(store.hasActiveOrSucceededGeneration).toBe(false)
+
+    // canceled → false（允许重试）
+    store.generations = [makeGen({ id: 1, status: 'canceled' })]
+    expect(store.hasActiveOrSucceededGeneration).toBe(false)
   })
 })

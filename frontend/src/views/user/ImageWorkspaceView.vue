@@ -288,18 +288,37 @@
                   </div>
                 </div>
 
-                <!-- Pending / Processing -->
+                <!-- Queued / Pending / Processing：运行态统一显示 loading 动画 + 骨架屏占位 -->
                 <div
-                  v-else-if="gen.status === 'pending' || gen.status === 'processing'"
-                  class="flex items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 py-12 dark:border-dark-600 dark:bg-dark-900"
+                  v-else-if="isRunningStatus(gen.status)"
+                  class="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-gray-300 bg-gray-50 py-12 dark:border-dark-600 dark:bg-dark-900"
                 >
                   <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-dark-400">
                     <svg class="h-5 w-5 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24">
                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
                       <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
-                    {{ t('aiImage.workspace.composer.generating') }}
+                    <span>{{ t('aiImage.workspace.generations.processingHint') }}</span>
                   </div>
+                  <!-- 骨架屏占位：明确告诉用户"图片区域正在准备中"，避免空白 -->
+                  <div class="grid w-full max-w-md grid-cols-2 gap-3 px-4">
+                    <div
+                      v-for="n in 2"
+                      :key="n"
+                      class="aspect-square animate-pulse rounded-lg bg-gray-200 dark:bg-dark-700"
+                    />
+                  </div>
+                </div>
+
+                <!-- Timeout：轮询超时或连续失败达到阈值后的虚拟终态 -->
+                <div
+                  v-else-if="gen.status === 'timeout'"
+                  class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300"
+                >
+                  <p class="font-medium">{{ t('aiImage.workspace.status.timeout') }}</p>
+                  <p class="mt-1 text-xs text-amber-700/80 dark:text-amber-400/80">
+                    {{ t('aiImage.workspace.generations.timeoutHint') }}
+                  </p>
                 </div>
 
                 <!-- Failed -->
@@ -476,6 +495,7 @@ import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import StatusBadge from '@/components/image/StatusBadge.vue'
 import { useImageGenerationStore } from '@/stores/imageGeneration'
+import { isRunningStatus } from '@/stores/imagePolling'
 import {
   IMAGE_GENERATION_INPUT_MIME_TYPES,
   IMAGE_GENERATION_RATIOS,
@@ -531,11 +551,16 @@ const filteredConversations = computed(() => {
   return conversations.value.filter((c) => (c.title || '').toLowerCase().includes(kw))
 })
 
-/** 单轮限制：当前会话已有 generation 时为 true，禁止再次提交 */
-const hasGeneratedOnce = computed(() => generations.value.length > 0)
+/**
+ * 单轮限制：当前会话存在"有效"生图任务（pending/queued/processing/succeeded）时为 true，
+ * 禁止再次提交并隐藏 composer。failed/canceled 视为终态失败，允许重试（composer 重新显示）。
+ * 与后端 CreateIfUnderUserConcurrency 的会话级检查保持一致，避免刷新页面或直接调接口绕过。
+ */
+const hasGeneratedOnce = computed(() => store.hasActiveOrSucceededGeneration)
 
 const canSubmit = computed(() => {
   if (creatingGeneration.value) return false
+  if (hasGeneratedOnce.value) return false
   if (!prompt.value.trim()) return false
   if (generationType.value === 'image_to_image' && pendingInputAssets.value.length === 0) {
     return false
@@ -625,6 +650,18 @@ async function onDeleteConversation(id: number) {
 
 async function onCreateGeneration() {
   composerError.value = null
+
+  // 双击保护：按钮虽已 disabled，但 Enter 键连按可能在 creatingGeneration 置位前触发
+  if (creatingGeneration.value) {
+    return
+  }
+
+  // 前端预拦截：当前会话已存在有效任务时直接提示，不发起请求
+  if (hasGeneratedOnce.value) {
+    composerError.value = t('aiImage.workspace.errors.taskAlreadyRunning')
+    return
+  }
+
   if (!prompt.value.trim()) {
     composerError.value = t('aiImage.workspace.composer.promptRequired')
     return
@@ -649,6 +686,8 @@ async function onCreateGeneration() {
     prompt.value = ''
   } catch (err: any) {
     // 优先使用后端 error_code 映射到友好提示，未匹配时回退到 unknown
+    // 收到 409 (IMAGE_TASK_ALREADY_RUNNING) 时不新增生成卡片、不启动轮询
+    // （store.createGeneration 在抛错前不会 upsertGeneration / schedulePoll）
     const reason = err?.reason as string | undefined
     if (reason && IMAGE_ERROR_CODE_TO_I18N_KEY[reason]) {
       composerError.value = imageErrorMessage(reason)

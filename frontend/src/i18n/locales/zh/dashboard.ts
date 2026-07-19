@@ -563,15 +563,21 @@ export default {
         outputImages: '生成结果',
         assetsNotFound: '图片资源未找到',
         assetsNotFoundHint: '任务已完成但未关联到图片资源，请稍后刷新或重新生成',
-        imageLoading: '图片加载中，请稍候'
+        imageLoading: '图片加载中，请稍候',
+        timeoutHint: '任务长时间未返回结果，已停止轮询。请刷新页面或新建会话后重试。',
+        processingHint: '排队生成中'
       },
       // 状态
       status: {
-        pending: '排队中',
+        queued: '排队中',
+        pending: '等待中',
         processing: '生成中',
         succeeded: '已完成',
-        failed: '失败',
-        canceled: '已取消'
+        completed: '已完成',
+        failed: '生成失败',
+        canceled: '已取消',
+        timeout: '生成超时，请重试',
+        unknown: '未知状态'
       },
       // 错误信息
       errors: {
@@ -597,7 +603,7 @@ export default {
         inputRequired: '图生图模式需要至少上传一张图片',
         inputTooLarge: '上传图片超出大小限制',
         inputUnsupported: '不支持的图片格式',
-        taskAlreadyRunning: '当前会话已有任务在进行中，请等待完成',
+        taskAlreadyRunning: '当前会话已生成过图片，请新建会话后继续创作',
         disabled: '图片生成功能未开启',
         unknown: '生成失败，请稍后重试'
       }

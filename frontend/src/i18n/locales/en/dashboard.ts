@@ -555,14 +555,20 @@ export default {
         outputImages: 'Outputs',
         assetsNotFound: 'Image assets not found',
         assetsNotFoundHint: 'The task completed but no image assets are linked. Please refresh or regenerate later.',
-        imageLoading: 'Loading image, please wait'
+        imageLoading: 'Loading image, please wait',
+        timeoutHint: 'The task has not returned for a long time and polling has stopped. Please refresh the page or start a new conversation to retry.',
+        processingHint: 'Generating, please wait...'
       },
       status: {
+        queued: 'Queued',
         pending: 'Pending',
-        processing: 'Processing',
+        processing: 'Generating',
         succeeded: 'Completed',
+        completed: 'Completed',
         failed: 'Failed',
-        canceled: 'Canceled'
+        canceled: 'Canceled',
+        timeout: 'Generation timed out, please retry',
+        unknown: 'Unknown'
       },
       errors: {
         network: 'Network error, please retry later',
@@ -587,7 +593,7 @@ export default {
         inputRequired: 'At least one input image is required for image-to-image',
         inputTooLarge: 'Uploaded image exceeds size limit',
         inputUnsupported: 'Unsupported image format',
-        taskAlreadyRunning: 'A task is already running in this conversation, please wait',
+        taskAlreadyRunning: 'An image has already been generated in this conversation. Please start a new conversation to continue.',
         disabled: 'Image generation is not enabled',
         unknown: 'Generation failed, please retry later'
       }
