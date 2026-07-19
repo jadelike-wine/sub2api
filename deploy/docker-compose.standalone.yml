@@ -83,6 +83,18 @@ services:
       - SETUP_MIGRATION_TIMEOUT_SECONDS=${SETUP_MIGRATION_TIMEOUT_SECONDS:-0}
 
       # =======================================================================
+      # TOTP (2FA) & Secret Encryption Configuration
+      # =======================================================================
+      # REQUIRED: A fixed encryption key for TOTP secrets and other encrypted
+      # credentials (e.g. monitoring channel API keys). If left empty, the app
+      # auto-generates a random key on every startup, which means any data
+      # encrypted with a previous key (TOTP configs, stored API keys) becomes
+      # undecryptable after restart or across replicas.
+      # Generate once and keep it stable across releases/instances:
+      #   openssl rand -hex 32
+      - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:?TOTP_ENCRYPTION_KEY is required}
+
+      # =======================================================================
       # Timezone Configuration
       # =======================================================================
       - TZ=${TZ:-Asia/Shanghai}
