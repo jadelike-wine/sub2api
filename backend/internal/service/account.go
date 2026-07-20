@@ -1251,10 +1251,34 @@ func (a *Account) IsOpenAIApiKey() bool {
 	return a.IsOpenAI() && a.Type == AccountTypeAPIKey
 }
 
+// ExtraKeyAgnesProvider 是账号 Extra 中标记该 OpenAI APIKey 账号上游为 Agnes
+// 系列（如 Agnes 2.0 Flash）的键。该标记只用于服务端策略路由：
+//   - 请求阶段：执行 Agnes Thinking 规范化（覆盖/剥离客户端绕过字段，由服务端
+//     配置决定最终 enable_thinking）。
+//   - 响应阶段：与 C 端 reasoning 剥离策略正交，剥离由 redactChatCompletionsResponse
+//     无条件执行，不依赖本标记。
+//
+// 与图片适配器 (ExtraKeyAgnesChatImageAdapter) 解耦：账号可以只声明 agnes_provider=true
+// 而不启用图片适配（纯文本聊天），此时仍会执行 Thinking 规范化；反之亦然。
+const ExtraKeyAgnesProvider = "agnes_provider"
+
+// IsAgnesProvider 报告该账号上游是否为 Agnes 系列（独立于图片适配能力）。
+// 启用条件：OpenAI APIKey 账号 + Extra["agnes_provider"]=true。
+func (a *Account) IsAgnesProvider() bool {
+	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra[ExtraKeyAgnesProvider].(bool)
+	return ok && enabled
+}
+
 // ExtraKeyAgnesChatImageAdapter 是账号 Extra 中标记启用 Agnes 多模态聊天图片适配的键。
 // 启用后，下游 OpenAI Chat Completions 请求中的 data:image/...;base64 图片会被
 // 自动上传到 Cloudflare R2 并替换为公网 HTTPS URL，再以原始 CC 转发到 Agnes 上游。
 // 仅对 platform=openai && type=apikey 账号生效。
+//
+// 与 ExtraKeyAgnesProvider 解耦：图片适配只决定请求阶段是否做 data:image→HTTPS
+// 转换，与 Thinking 规范化、响应 reasoning 剥离均无关。
 const ExtraKeyAgnesChatImageAdapter = "agnes_chat_image_adapter"
 
 // AgnesChatImageAdapterEnabled 报告该账号是否启用了 Agnes 多模态聊天图片适配。

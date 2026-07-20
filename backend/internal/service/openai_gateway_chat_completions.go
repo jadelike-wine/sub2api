@@ -110,8 +110,10 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 
 	// 1b. 解析 publicModel 用于身份提示词注入和客户端响应脱敏。
 	// publicModel 必须来自服务端解析后的 ResolvedModel.PublicModel（由 handler 注入 gin.Context）。
-	// 未注入时 fallback 到 originalModel（保持向后兼容）。
-	publicModel := getPublicModelFromContext(c)
+	// 未注入时 fallback 到 originalModel（保持向后兼容），但**不注入**身份提示词，
+	// 避免破坏未配置渠道映射场景下的 messages 顺序（如 DeepSeek reasoning_content 回放）。
+	publicModelFromContext := getPublicModelFromContext(c)
+	publicModel := publicModelFromContext
 	if publicModel == "" {
 		publicModel = originalModel
 	}
@@ -183,8 +185,13 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		// 必须在 CC→Responses 转换之前注入，使身份提示词成为 messages[0]，
 		// 后续 ChatCompletionsToResponses 会自然保留这条消息。
 		// 不修改客户端原始 body，仅修改函数内 chatReq 副本。
-		if publicModel != "" {
-			if contentBytes, mErr := json.Marshal(buildIdentitySystemPrompt(publicModel)); mErr == nil {
+		//
+		// 仅对 APIKey 账号注入：APIKey 账号可能对接第三方 OpenAI 兼容上游（如 Agnes），
+		// 需要隐藏真实上游身份；OAuth 账号上游即原生 OpenAI，无身份泄露风险，
+		// 且 OAuth 路径会把 system 消息折叠为 instructions 字段，注入会破坏
+		// 「instructions 必须为空字符串」的契约（见 TestForwardAsChatCompletions_OAuthDoesNotInjectDefaultInstructions）。
+		if publicModelFromContext != "" && account.Type == AccountTypeAPIKey {
+			if contentBytes, mErr := json.Marshal(buildIdentitySystemPrompt(publicModelFromContext)); mErr == nil {
 				identityMsg := apicompat.ChatMessage{
 					Role:    "system",
 					Content: contentBytes,
@@ -510,7 +517,17 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	// writeContentType 仅在头不存在时才设置，无法覆盖。这里显式 Set 强制改回 JSON，
 	// 否则下游"看头判流式"的中间层（如 new-api）会把本应聚合的 JSON 当成 SSE 处理。
 	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	c.JSON(http.StatusOK, chatResp)
+	// 平台级 C 端策略：剥离 reasoning_content 及别名、重写 model、删除上游 metadata。
+	// Responses API 的 reasoning output 会被 ResponsesToChatCompletions 映射为
+	// choices[0].message.reasoning_content。即便上游是 OpenAI 原生 Responses，
+	// 普通 OpenAI 兼容客户端也不得直接看到 reasoning（与 forwardAsRawChatCompletions
+	// 路径的脱敏行为保持一致）。Marshal 失败时 fallback 到 c.JSON 以保持协议兼容。
+	if respBytes, err := json.Marshal(chatResp); err == nil {
+		respBytes = redactChatCompletionsResponse(respBytes, publicModel)
+		c.Data(http.StatusOK, "application/json; charset=utf-8", respBytes)
+	} else {
+		c.JSON(http.StatusOK, chatResp)
+	}
 
 	return &OpenAIForwardResult{
 		RequestID:     requestID,
@@ -588,6 +605,45 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			Duration:      time.Since(startTime),
 			FirstTokenMs:  firstTokenMs,
 		}
+	}
+
+	// formatChatChunkSSE 序列化 CC chunk 为 SSE 格式并应用平台级 C 端脱敏：
+	//   - 重写 model 字段为 publicModel（隐藏真实上游模型）
+	//   - 删除 choices[*].delta / message 上的所有 reasoning 别名字段
+	//   - 删除 provider_specific_fields / metadata
+	//
+	// 返回 (sse, true) 表示正常 chunk（payload 可能已脱敏）；
+	// 返回 ("", false) 表示该 chunk 应被丢弃（reasoning-only 删除后无有效载荷、
+	// marshal 失败、或 fail-closed malformed JSON）。
+	//
+	// Responses API 的 reasoning delta 会被 ResponsesEventToChatChunks 映射为
+	// chunk.choices[].delta.reasoning_content，必须在此剥离，否则普通 OpenAI
+	// 兼容客户端会通过 SSE 流式看到上游 reasoning。
+	formatChatChunkSSE := func(chunk apicompat.ChatCompletionsChunk) (string, bool) {
+		data, err := json.Marshal(chunk)
+		if err != nil {
+			logger.L().Warn("openai chat_completions stream: failed to marshal chunk",
+				zap.Error(err),
+				zap.String("request_id", requestID),
+			)
+			return "", false
+		}
+		payload := string(data)
+		redactedPayload, result := redactChatCompletionsStreamChunk(payload, publicModel)
+		switch result {
+		case ChunkFatal:
+			// Fail-closed：malformed JSON 不得透传。本路径 JSON 由 json.Marshal
+			// 构造，理论不应失败；若仍失败说明发生内存损坏或并发修改。
+			logger.L().Warn("openai chat_completions stream: malformed SSE JSON after construction",
+				zap.String("request_id", requestID),
+			)
+			return "", false
+		case ChunkDrop:
+			return "", false
+		case ChunkPass:
+			return "data: " + redactedPayload + "\n\n", true
+		}
+		return "", false
 	}
 
 	processDataLine := func(payload string) bool {
@@ -695,12 +751,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		if !clientDisconnected {
 			for _, chunk := range chunks {
 				refusalDetector.ObserveChatChunk(chunk)
-				sse, err := apicompat.ChatChunkToSSE(chunk)
-				if err != nil {
-					logger.L().Warn("openai chat_completions stream: failed to marshal chunk",
-						zap.Error(err),
-						zap.String("request_id", requestID),
-					)
+				sse, ok := formatChatChunkSSE(chunk)
+				if !ok {
 					continue
 				}
 				if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
@@ -752,8 +804,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		if finalChunks := apicompat.FinalizeResponsesChatStream(state); len(finalChunks) > 0 && !clientDisconnected {
 			for _, chunk := range finalChunks {
 				refusalDetector.ObserveChatChunk(chunk)
-				sse, err := apicompat.ChatChunkToSSE(chunk)
-				if err != nil {
+				sse, ok := formatChatChunkSSE(chunk)
+				if !ok {
 					continue
 				}
 				if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {

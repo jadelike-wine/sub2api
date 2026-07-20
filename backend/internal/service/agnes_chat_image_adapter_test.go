@@ -26,10 +26,10 @@ import (
 
 // agnesChatFakeStorage 是 Agnes 适配器测试用的可控 EnovaImageAssetStorage mock。
 type agnesChatFakeStorage struct {
-	configured    bool
-	putError      error
-	presignError  error
-	uploadedKeys  []string
+	configured     bool
+	putError       error
+	presignError   error
+	uploadedKeys   []string
 	uploadedBodies [][]byte
 	presignedKeys  []string
 }
@@ -100,8 +100,9 @@ func agnesChatTestAccount() *Account {
 			},
 		},
 		Extra: map[string]any{
-			ExtraKeyAgnesChatImageAdapter:                    true,
-			openai_compat.ExtraKeyResponsesMode:              "force_chat_completions",
+			ExtraKeyAgnesProvider:               true,
+			ExtraKeyAgnesChatImageAdapter:       true,
+			openai_compat.ExtraKeyResponsesMode: "force_chat_completions",
 		},
 	}
 }
@@ -572,6 +573,10 @@ func TestForwardAsRawChatCompletions_AgnesChatImageAdapter(t *testing.T) {
 	ctx := context.WithValue(c.Request.Context(), ctxkey.UserID, int64(42))
 	c.Request = c.Request.WithContext(ctx)
 
+	// 模拟 handler 在解析完渠道映射后注入 PublicModel
+	// （生产代码在 ChannelService.ResolveChannelMappingAndRestrict 之后通过 c.Set 注入）
+	c.Set(ContextKeyPublicModel, "agnes-flash-vision")
+
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -603,10 +608,13 @@ func TestForwardAsRawChatCompletions_AgnesChatImageAdapter(t *testing.T) {
 	// 断言 model 已映射为 agnes-2.0-flash
 	require.Equal(t, "agnes-2.0-flash", gjson.GetBytes(upstream.lastBody, "model").String())
 
-	// 断言 messages[0].content 数组保留 text + image_url 结构
-	contentArr := gjson.GetBytes(upstream.lastBody, "messages.0.content")
-	require.True(t, contentArr.IsArray(), "content should be array")
-	parts := contentArr.Array()
+	// 身份提示词注入后，messages[0] 是 system 消息（身份提示词），
+	// 原始 user 消息被推到 messages[1]。通过 role=user 定位原始用户消息。
+	require.Equal(t, "system", gjson.GetBytes(upstream.lastBody, "messages.0.role").String(),
+		"messages[0] should be the injected identity system prompt")
+	userContentArr := gjson.GetBytes(upstream.lastBody, "messages.#(role=user).content")
+	require.True(t, userContentArr.IsArray(), "user message content should be array")
+	parts := userContentArr.Array()
 	require.Len(t, parts, 3)
 	require.Equal(t, "text", parts[0].Get("type").String())
 	require.Equal(t, "describe these images", parts[0].Get("text").String())

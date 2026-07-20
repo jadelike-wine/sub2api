@@ -53,8 +53,11 @@ func TestOpsServiceRecordErrorBatch_SanitizesAndBatches(t *testing.T) {
 	require.Equal(t, "api_error", first.ErrorType)
 	require.Nil(t, first.UpstreamStatusCode)
 	require.NotNil(t, first.UpstreamErrorMessage)
+	// 整个 URL（含 access_token=secret-value）被 sanitizeUpstreamErrorMessage
+	// 内的 URL 正则统一替换为 ***，凭证名与值均不保留。
 	require.NotContains(t, *first.UpstreamErrorMessage, "secret-value")
-	require.Contains(t, *first.UpstreamErrorMessage, "access_token=***")
+	require.NotContains(t, *first.UpstreamErrorMessage, "access_token")
+	require.NotContains(t, *first.UpstreamErrorMessage, "example.com")
 	require.NotNil(t, first.UpstreamErrorDetail)
 	require.NotContains(t, *first.UpstreamErrorDetail, "secret-token")
 	require.NotContains(t, first.ErrorBody, "secret")

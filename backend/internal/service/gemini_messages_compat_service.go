@@ -1701,6 +1701,7 @@ var (
 	// - API Key 片段（sk-... / sk-ant-... / 一般化的 key=...）
 	// - 完整的上游 Base URL（https://...）
 	// - deployment / region / account / endpoint 等 key=value 形式的定位信息
+	// - 上游供应商身份关键词（仅在错误消息上下文中替换，不影响正常 content）
 	// 这些都不能透传给客户端，避免泄露上游身份或定位上游部署。
 	sensitiveUpstreamIdentityPatterns = []*regexp.Regexp{
 		// Authorization: Bearer xxx / Bearer xxx
@@ -1713,7 +1714,13 @@ var (
 		// 完整 https URL（避免泄露上游 Base URL）
 		regexp.MustCompile(`https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+`),
 		// deployment=xxx / region=xxx / account=xxx / endpoint=xxx 等 key=value 定位信息
+		// 仅匹配 key=value / key:value 形式，不匹配空格分隔形式以避免误伤英文单词
+		// （如 "account action"）。空格分隔的部署名由供应商身份关键词正则兜底。
 		regexp.MustCompile(`(?i)\b(?:deployment|region|account|endpoint|instance|provider)\s*[=:]\s*['"]?[A-Za-z0-9_\-\./]{1,}`),
+		// 上游供应商身份关键词（仅在错误消息上下文，不影响用户正常讨论）
+		// 覆盖 "Sapiens AI" / "Agnes AI" / "Sapiens" / "Agnes" 单独或成对出现
+		// 注意：\bAgnes\b 会匹配 "agnes-prod" 中的 "agnes" 前缀（s/- 之间存在词边界）
+		regexp.MustCompile(`(?i)\b(?:Sapiens\s+AI|Agnes\s+AI|Sapiens|Agnes)\b`),
 	}
 )
 

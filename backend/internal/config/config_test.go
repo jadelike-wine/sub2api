@@ -2166,3 +2166,54 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 		t.Fatalf("image stream timeout = %d, want greater than ordinary stream timeout %d", cfg.Gateway.ImageStreamDataIntervalTimeout, cfg.Gateway.StreamDataIntervalTimeout)
 	}
 }
+
+// TestValidateConfig_AgnesExposeReasoningNormalizedToFalse 验证 C 端安全策略：
+// agnes_chat.thinking.expose_reasoning=true 必须被强制归一化为 false 并记录警告。
+// 普通公开 OpenAI 兼容接口不得暴露原始 reasoning（参见 redactChatCompletionsResponse
+// 的无条件剥离策略）。
+func TestValidateConfig_AgnesExposeReasoningNormalizedToFalse(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	t.Run("true forced to false with normalization", func(t *testing.T) {
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		cfg.AgnesChat.Thinking.ExposeReasoning = true
+
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() should not fail on expose_reasoning=true (normalized), got: %v", err)
+		}
+		if cfg.AgnesChat.Thinking.ExposeReasoning {
+			t.Fatalf("expose_reasoning=true should be normalized to false; got true")
+		}
+	})
+
+	t.Run("false stays false", func(t *testing.T) {
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		cfg.AgnesChat.Thinking.ExposeReasoning = false
+
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error: %v", err)
+		}
+		if cfg.AgnesChat.Thinking.ExposeReasoning {
+			t.Fatalf("expose_reasoning=false should remain false")
+		}
+	})
+
+	t.Run("default is false", func(t *testing.T) {
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.AgnesChat.Thinking.ExposeReasoning {
+			t.Fatalf("default expose_reasoning should be false; got true")
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() default config error: %v", err)
+		}
+	})
+}

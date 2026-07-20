@@ -46,8 +46,10 @@ func (s *GatewayService) ForwardAsChatCompletions(
 
 	// 1b. 解析 publicModel 用于身份提示词注入和客户端响应脱敏。
 	// publicModel 必须来自服务端解析后的 ResolvedModel.PublicModel（由 handler 注入 gin.Context）。
-	// 未注入时 fallback 到 originalModel（保持向后兼容）。
-	publicModel := getPublicModelFromContext(c)
+	// 未注入时 fallback 到 originalModel（保持向后兼容），但**不注入**身份提示词，
+	// 避免破坏未配置渠道映射场景下的 messages 顺序（如 DeepSeek reasoning_content 回放）。
+	publicModelFromContext := getPublicModelFromContext(c)
+	publicModel := publicModelFromContext
 	if publicModel == "" {
 		publicModel = originalModel
 	}
@@ -56,8 +58,13 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	// 必须在 CC→Responses 转换之前注入，使身份提示词成为 messages[0]，
 	// 后续 ChatCompletionsToResponses 会自然保留这条消息。
 	// 不修改客户端原始 body，仅修改函数内 ccReq 副本。
-	if strings.TrimSpace(publicModel) != "" {
-		if contentBytes, mErr := json.Marshal(buildIdentitySystemPrompt(publicModel)); mErr == nil {
+	//
+	// 仅当 handler 显式注入了 PublicModel（即配置了渠道映射）时才注入。
+	// 仅对 APIKey/ServiceAccount 账号注入：这些账号可能对接第三方 OpenAI 兼容上游，
+	// 需要隐藏真实上游身份；OAuth 账号上游即原生 Anthropic，无身份泄露风险，
+	// 且 OAuth 路径会把 system 消息折叠为 instructions 字段，注入会破坏既有契约。
+	if publicModelFromContext != "" && account.Type != AccountTypeOAuth {
+		if contentBytes, mErr := json.Marshal(buildIdentitySystemPrompt(publicModelFromContext)); mErr == nil {
 			identityMsg := apicompat.ChatMessage{
 				Role:    "system",
 				Content: contentBytes,
@@ -362,6 +369,12 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 	// (parity with Parrot non-stream flow that marshals → restore → emit).
 	if respBytes, err := json.Marshal(ccResp); err == nil {
 		respBytes = reverseToolNamesIfPresent(c, respBytes)
+		// 平台级 C 端策略：剥离 reasoning_content 及别名、重写 model、删除上游 metadata。
+		// Anthropic thinking content block 会被 AnthropicToResponsesResponse 转换为
+		// Responses reasoning output，再由 ResponsesToChatCompletions 映射为 CC
+		// message.reasoning_content。此处必须脱敏，否则 Anthropic thinking 会泄露给
+		// 普通 OpenAI 兼容客户端。
+		respBytes = redactChatCompletionsResponse(respBytes, publicModel)
 		c.Data(http.StatusOK, "application/json; charset=utf-8", respBytes)
 	} else {
 		c.JSON(http.StatusOK, ccResp)
@@ -438,14 +451,38 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 	}
 
 	writeChunk := func(chunk apicompat.ChatCompletionsChunk) bool {
-		sse, err := apicompat.ChatChunkToSSE(chunk)
+		data, err := json.Marshal(chunk)
 		if err != nil {
 			return false
 		}
 		// Reverse tool name mapping: fake → real, per-chunk bytes.Replace.
 		// c 可能持有请求侧注入的 ToolNameRewrite；无则仅做静态前缀还原。
-		out := string(reverseToolNamesIfPresent(c, []byte(sse)))
-		if _, err := fmt.Fprint(c.Writer, out); err != nil {
+		// 必须在 redactChatCompletionsStreamChunk 之前执行：reverseToolNamesIfPresent
+		// 在字节级做替换，需要完整的 JSON 上下文；脱敏后的 JSON 可能因字段删除改变
+		// 字节边界，导致替换错位。
+		payload := string(reverseToolNamesIfPresent(c, data))
+		// 平台级 C 端策略：剥离 reasoning_content 及别名、重写 model、删除上游 metadata。
+		// Anthropic thinking content block 会被 AnthropicEventToResponsesEvents 转换为
+		// Responses reasoning delta，再由 ResponsesEventToChatChunks 映射为 CC
+		// chunk.choices[].delta.reasoning_content。此处必须脱敏，否则 Anthropic
+		// thinking 会通过 SSE 流式泄露给普通 OpenAI 兼容客户端。
+		redactedPayload, result := redactChatCompletionsStreamChunk(payload, publicModel)
+		switch result {
+		case ChunkFatal:
+			// Fail-closed：malformed JSON 不得透传原文。本路径的 JSON 由 json.Marshal
+			// 构造，理论不应失败；若仍失败说明发生了内存损坏或并发修改。
+			// 记录不含原文的警告日志并丢弃该 chunk。
+			logger.L().Warn("forward_as_cc stream: malformed SSE JSON after construction",
+				zap.String("request_id", requestID),
+			)
+			return false
+		case ChunkDrop:
+			// reasoning-only chunk 删除后无有效载荷，丢弃。
+			return false
+		case ChunkPass:
+			// 正常写出（payload 可能已被脱敏）。
+		}
+		if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", redactedPayload); err != nil {
 			return true // client disconnected
 		}
 		return false

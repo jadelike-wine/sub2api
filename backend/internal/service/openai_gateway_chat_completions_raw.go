@@ -98,13 +98,42 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	// publicModel 必须来自服务端解析后的 ResolvedModel.PublicModel，
 	// 由 handler 在调用 ForwardAsChatCompletions 之前通过 c.Set 注入。
 	// 未注入时 fallback 到 originalModel（即 body.model，已被渠道映射改写为上游模型），
-	// 此时不注入提示词，保持向后兼容。
-	publicModel := getPublicModelFromContext(c)
+	// 此时**不注入**提示词，保持向后兼容（避免破坏 DeepSeek 等模型的 reasoning_content 回放顺序）。
+	publicModelFromContext := getPublicModelFromContext(c)
+	publicModel := publicModelFromContext
 	if publicModel == "" {
 		publicModel = originalModel
 	}
-	if injected, injErr := injectIdentitySystemPrompt(upstreamBody, publicModel); injErr == nil {
-		upstreamBody = injected
+	if publicModelFromContext != "" {
+		if injected, injErr := injectIdentitySystemPrompt(upstreamBody, publicModelFromContext); injErr == nil {
+			upstreamBody = injected
+		}
+	}
+
+	// 3c. Agnes 上游请求规范化（服务端 Thinking 策略 + 剥离客户端绕过字段）。
+	// 仅对 Agnes 上游账号生效（通过 IsAgnesProvider 标识，独立于图片适配能力）：
+	// 纯文本 Agnes 账号（agnes_provider=true 但 agnes_chat_image_adapter=false）
+	// 也必须执行 Thinking 规范化。
+	// 客户端传入的 chat_template_kwargs.enable_thinking / include_reasoning /
+	// return_reasoning / expose_reasoning / 顶层 thinking / reasoning_effort 等
+	// 字段都会被剥离或覆盖，最终值由服务端配置决定。
+	// 不修改 model 字段（已由 step 3 通过 ResolvedModel 处理）。
+	// 不依赖客户端值：即便客户端传入 null / 字符串 / 数组 / 异常对象，也不会 panic。
+	if account.IsAgnesProvider() && s.cfg != nil {
+		normalizedBody, normRes := normalizeAgnesThinkingRequest(upstreamBody, s.cfg.AgnesChat.Thinking)
+		if normRes.Applied {
+			upstreamBody = normalizedBody
+			logger.L().Debug("agnes thinking request normalized",
+				zap.Int64("account_id", account.ID),
+				zap.String("mode", normRes.Mode),
+				zap.Bool("effective_enable_thinking", normRes.EffectiveEnableThinking),
+				zap.Bool("client_had_enable_thinking", normRes.ClientHadEnableThinking),
+				zap.Bool("client_enable_thinking_value", normRes.ClientEnableThinkingValue),
+				zap.Strings("stripped_bypass_fields", normRes.StrippedBypassFields),
+				zap.Bool("stripped_anthropic_thinking", normRes.StrippedAnthropicThinking),
+				zap.Strings("auto_triggered_signals", normRes.AutoTriggeredSignals),
+			)
+		}
 	}
 
 	// 4. Apply OpenAI fast policy on the CC body
@@ -241,7 +270,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if clientStream {
 		result, forwardErr = s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
 	} else {
-		result, forwardErr = s.bufferRawChatCompletions(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		result, forwardErr = s.bufferRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
 	if result != nil {
 		addOpenAIUsage(&result.Usage, bridgeUsage)
@@ -294,6 +323,10 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	if publicModel == "" {
 		publicModel = originalModel
 	}
+	// 普通 C 端 OpenAI 兼容接口策略：响应层始终剥离 reasoning 别名。
+	// 不依赖 account.AgnesChatImageAdapterEnabled() —— 该字段仅控制请求阶段图片适配，
+	// 与响应层安全策略语义无关。即便上游是 DeepSeek-reasoner，客户端也不得看到
+	// 原始 reasoning（上游在多轮对话中需要的 reasoning_content 回放由请求层透传实现）。
 
 	var usage OpenAIUsage
 	var firstTokenMs *int
@@ -301,16 +334,37 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	clientOutputStarted := false
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
+	// streamFatalErr 一旦非空表示已发生不可恢复的解析失败，需要终止流并返回受控错误。
+	var streamFatalErr error
+	// chunkIndex 用于在 malformed JSON 警告日志中标识 chunk 序号（不含原文）。
+	chunkIndex := 0
 
 	writeLine := func(line string) {
-		if clientDisconnected {
+		if clientDisconnected || streamFatalErr != nil {
 			return
 		}
-		// 在写出前对 SSE data 行做脱敏（重写 model、删除上游扩展字段）。
+		// 在写出前对 SSE data 行做脱敏（重写 model、删除上游扩展字段、剥离 reasoning）。
 		// 非 data 行（注释、event、空行）与 [DONE] 原样透传。
-		redactedLine := redactOpenAIChatSSELine(line, publicModel)
+		redactedLine, result := redactOpenAIChatSSELine(line, publicModel)
+		switch result {
+		case SSELineFatal:
+			// Fail-closed：malformed JSON 不得透传原文。
+			// 记录不含原文的警告日志（仅记 chunk 序号与 request_id），终止流。
+			logger.L().Warn("openai chat_completions raw: malformed SSE JSON, terminating stream (fail-closed)",
+				zap.String("request_id", requestID),
+				zap.Int("chunk_index", chunkIndex),
+				zap.Int64("account_id", account.ID),
+			)
+			streamFatalErr = fmt.Errorf("malformed upstream SSE JSON at chunk %d", chunkIndex)
+			return
+		case SSELineDrop:
+			// reasoning-only chunk 删除后无有效载荷，丢弃。
+			chunkIndex++
+			return
+		}
 		if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
 			pendingLines = append(pendingLines, redactedLine)
+			chunkIndex++
 			return
 		}
 		if !clientOutputStarted {
@@ -335,6 +389,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				zap.String("request_id", requestID),
 			)
 		}
+		chunkIndex++
 	}
 
 	for scanner.Scan() {
@@ -355,6 +410,10 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 
 		writeLine(line)
+		if streamFatalErr != nil {
+			// Fail-closed：终止扫描，不再读取后续 chunk。
+			break
+		}
 		if line == "" {
 			if !clientDisconnected && clientOutputStarted {
 				c.Writer.Flush()
@@ -373,7 +432,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				zap.String("request_id", requestID),
 			)
 		}
-	} else if !clientDisconnected && !clientOutputStarted {
+	} else if streamFatalErr == nil && !clientDisconnected && !clientOutputStarted {
 		if refusalDetector.IsSilentRefusal() {
 			return nil, newOpenAISilentRefusalFailoverError(c, account, requestID)
 		}
@@ -393,6 +452,19 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				c.Writer.Flush()
 				clientOutputStarted = true
 			}
+		}
+	}
+
+	// Fail-closed：malformed JSON 时向客户端发送受控 SSE 错误事件并终止流。
+	// 不泄露原始 payload、不含上游模型名/供应商信息。
+	if streamFatalErr != nil && !clientDisconnected {
+		if !clientOutputStarted {
+			writeStreamHeaders()
+		}
+		_, _ = c.Writer.WriteString("data: {\"error\":{\"message\":\"upstream stream parse error\",\"type\":\"upstream_stream_error\"}}\n\n")
+		_, _ = c.Writer.WriteString("data: [DONE]\n\n")
+		if !clientDisconnected {
+			c.Writer.Flush()
 		}
 	}
 
@@ -455,6 +527,7 @@ func extractCCStreamUsage(payload string) *OpenAIUsage {
 func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	c *gin.Context,
 	resp *http.Response,
+	account *Account,
 	originalModel string,
 	billingModel string,
 	upstreamModel string,
@@ -483,7 +556,9 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	if publicModel == "" {
 		publicModel = originalModel
 	}
-	// 脱敏：重写 model 字段、删除上游扩展字段。
+	// 脱敏：重写 model 字段、删除上游扩展字段、剥离 reasoning 别名。
+	// 普通 C 端策略：始终剥离 reasoning，不依赖 account.AgnesChatImageAdapterEnabled()。
+	// 即便上游是 DeepSeek-reasoner，客户端也不得看到原始 reasoning。
 	// 解析失败时原样返回，避免破坏协议。
 	redactedBody := redactChatCompletionsResponse(respBody, publicModel)
 

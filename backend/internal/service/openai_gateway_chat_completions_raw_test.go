@@ -206,7 +206,7 @@ func TestForwardAsRawChatCompletions_NonStreamingCapturesCacheWriteUsage(t *test
 	}
 }
 
-func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentNonStreaming(t *testing.T) {
+func TestForwardAsRawChatCompletions_StripsDeepSeekReasoningContentNonStreaming(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-reasoner","messages":[{"role":"user","content":"hello"}],"stream":false}`)
@@ -233,11 +233,14 @@ func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentNonStreami
 	require.NotNil(t, result)
 	require.Equal(t, 3, result.Usage.InputTokens)
 	require.Equal(t, 5, result.Usage.OutputTokens)
-	require.Equal(t, "think first", gjson.Get(rec.Body.String(), "choices.0.message.reasoning_content").String())
+	// 普通 C 端策略：reasoning_content 必须从客户端响应中剥离，即便上游是 deepseek-reasoner。
+	// 上游在多轮对话中需要的 reasoning 回放由请求层透传实现（见 TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentInRequest）。
+	require.False(t, gjson.Get(rec.Body.String(), "choices.0.message.reasoning_content").Exists(), "reasoning_content must not appear in client response")
+	require.NotContains(t, rec.Body.String(), "think first")
 	require.Equal(t, "final answer", gjson.Get(rec.Body.String(), "choices.0.message.content").String())
 }
 
-func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentStreaming(t *testing.T) {
+func TestForwardAsRawChatCompletions_StripsDeepSeekReasoningContentStreaming(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-reasoner","messages":[{"role":"user","content":"hello"}],"stream":true}`)
@@ -275,7 +278,10 @@ func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentStreaming(
 	require.NotNil(t, result)
 	require.Equal(t, 3, result.Usage.InputTokens)
 	require.Equal(t, 5, result.Usage.OutputTokens)
-	require.Contains(t, rec.Body.String(), `"reasoning_content":"think first"`)
+	// 普通 C 端策略：reasoning_content 必须从客户端响应中剥离，即便上游是 deepseek-reasoner。
+	// reasoning-only chunk 删除后无有效载荷，会被 drop（不透传给客户端）。
+	require.NotContains(t, rec.Body.String(), `"reasoning_content":"think first"`)
+	require.NotContains(t, rec.Body.String(), "think first")
 	require.Contains(t, rec.Body.String(), `"content":"final answer"`)
 	require.Contains(t, rec.Body.String(), "data: [DONE]")
 }
@@ -306,6 +312,69 @@ func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentInRequest(
 	require.NotNil(t, result)
 	require.Equal(t, "need tool", gjson.GetBytes(upstream.lastBody, "messages.1.reasoning_content").String())
 	require.Equal(t, "get_weather", gjson.GetBytes(upstream.lastBody, "messages.1.tool_calls.0.function.name").String())
+}
+
+// TestForwardAsRawChatCompletions_AgnesProviderThinkingNormalizationDecoupledFromImageAdapter
+// 验证 Agnes Thinking 规范化与图片适配器解耦：
+// 仅声明 agnes_provider=true（未启用图片适配器）的纯文本 Agnes 账号也必须执行
+// Thinking 规范化，客户端无法通过 chat_template_kwargs.enable_thinking=true / include_reasoning=true
+// / expose_reasoning=true / 顶层 thinking / reasoning_effort 等字段绕过服务端策略。
+func TestForwardAsRawChatCompletions_AgnesProviderThinkingNormalizationDecoupledFromImageAdapter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// 客户端尝试多个绕过字段
+	body := []byte(`{"model":"agnes-2.0-flash","messages":[{"role":"user","content":"hi"}],"chat_template_kwargs":{"enable_thinking":true},"include_reasoning":true,"return_reasoning":true,"expose_reasoning":true,"reasoning_effort":"high","thinking":{"type":"enabled"},"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_agnes_provider_decoupled"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_agnes_provider","object":"chat.completion","model":"agnes-2.0-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`)),
+	}}
+
+	cfg := rawChatCompletionsTestConfig()
+	cfg.AgnesChat.Thinking = config.AgnesThinkingConfig{
+		Mode:            AgnesThinkingModeDisabled, // 服务端策略：强制关闭
+		ExposeReasoning: false,
+	}
+	svc := &OpenAIGatewayService{
+		cfg:          cfg,
+		httpUpstream: upstream,
+	}
+	// 关键：仅声明 agnes_provider=true，不启用图片适配器
+	account := &Account{
+		ID:          301,
+		Name:        "agnes-text-only",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-agnes-test",
+			"base_url": "http://upstream.example",
+		},
+		Extra: map[string]any{
+			ExtraKeyAgnesProvider:         true,  // Agnes 账号
+			ExtraKeyAgnesChatImageAdapter: false, // 图片适配关闭
+		},
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Thinking 规范化已执行：服务端覆盖 enable_thinking=false（disabled 模式）
+	require.True(t, gjson.GetBytes(upstream.lastBody, "chat_template_kwargs.enable_thinking").Exists(), "enable_thinking must be set by server")
+	require.False(t, gjson.GetBytes(upstream.lastBody, "chat_template_kwargs.enable_thinking").Bool(), "disabled mode must force enable_thinking=false")
+
+	// 客户端绕过字段必须被剥离
+	require.False(t, gjson.GetBytes(upstream.lastBody, "include_reasoning").Exists(), "include_reasoning must be stripped")
+	require.False(t, gjson.GetBytes(upstream.lastBody, "return_reasoning").Exists(), "return_reasoning must be stripped")
+	require.False(t, gjson.GetBytes(upstream.lastBody, "expose_reasoning").Exists(), "expose_reasoning must be stripped")
+	require.False(t, gjson.GetBytes(upstream.lastBody, "reasoning_effort").Exists(), "reasoning_effort must be stripped")
+	require.False(t, gjson.GetBytes(upstream.lastBody, "thinking").Exists(), "top-level thinking must be stripped")
 }
 
 func TestForwardAsRawChatCompletions_NormalizesGLMReasoningEffortForUpstream(t *testing.T) {
@@ -444,7 +513,12 @@ func TestHandleChatStreamingResponse_SilentRefusalReasoningSummaryExempt(t *test
 	)
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Contains(t, rec.Body.String(), `"reasoning_content":"thinking only"`)
+	// Point 4 安全策略：reasoning_content 在 C 端边界无条件剥离。
+	// silent refusal 检测器在脱敏前已通过 ObserveChatChunk 观察 chunk，
+	// sawReasoning=true 仍正确设置，因此不会触发 failover（require.NoError 验证此点）。
+	// 客户端输出不得包含 reasoning_content 字段或其文本。
+	require.NotContains(t, rec.Body.String(), `"reasoning_content"`)
+	require.NotContains(t, rec.Body.String(), "thinking only")
 	require.Contains(t, rec.Body.String(), "data: [DONE]")
 }
 
@@ -638,7 +712,7 @@ func TestBufferRawChatCompletions_RejectsOversizedResponse(t *testing.T) {
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
 	svc.cfg.Gateway.UpstreamResponseReadMaxBytes = 3
 
-	result, err := svc.bufferRawChatCompletions(c, resp, "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now())
+	result, err := svc.bufferRawChatCompletions(c, resp, nil, "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now())
 	require.ErrorIs(t, err, ErrUpstreamResponseBodyTooLarge)
 	require.Nil(t, result)
 	require.Equal(t, http.StatusBadGateway, rec.Code)

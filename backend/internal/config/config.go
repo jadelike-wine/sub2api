@@ -116,6 +116,38 @@ type AgnesChatConfig struct {
 	MaxImagesPerRequest int   `mapstructure:"max_images_per_request"` // 单次请求最多图片数
 	MaxImageBytes       int64 `mapstructure:"max_image_bytes"`        // 单张图片解码后字节上限
 	MaxTotalBytes       int64 `mapstructure:"max_total_bytes"`        // 单次请求所有图片字节总和上限
+
+	// Thinking 控制 Agnes 上游的增强推理（chat_template_kwargs.enable_thinking）策略。
+	// 与暴露 reasoning 是两件事：enable_thinking 影响能力/延迟/Token，
+	// expose_reasoning 控制原始推理文本是否返回客户端。两者彻底分离。
+	Thinking AgnesThinkingConfig `mapstructure:"thinking"`
+}
+
+// AgnesThinkingConfig 控制发往 Agnes 上游的 Thinking 参数与响应暴露策略。
+//
+// Mode:
+//   - disabled: 强制 enable_thinking=false，客户端不能重新开启
+//   - enabled:  强制 enable_thinking=true，客户端不能关闭
+//   - auto:     由服务端确定性规则决定（tools/tool_choice/输入长度/代码块/多轮等）
+//
+// ExposeReasoning: 控制原始 reasoning 文本是否返回客户端。普通 C 端和公开
+// OpenAI 兼容接口必须始终为 false；为 true 时仅允许在受限管理诊断场景使用。
+// 注意：即便 ExposeReasoning=true，响应清洗仍会执行——本字段仅影响是否在受限
+// 通道中保留 reasoning，C 端通道（ForwardAsChatCompletions / forwardAsRawChatCompletions）
+// 一律剥离 reasoning。
+type AgnesThinkingConfig struct {
+	Mode            string `mapstructure:"mode"`             // "disabled" | "enabled" | "auto"
+	ExposeReasoning bool   `mapstructure:"expose_reasoning"` // C 端必须为 false
+
+	// auto 模式规则参数（仅当 Mode=auto 时生效）
+	// AutoInputCharsThreshold: 输入字符数达到此阈值时启用 thinking（默认 2000）
+	AutoInputCharsThreshold int `mapstructure:"auto_input_chars_threshold"`
+	// AutoEnableOnTools: 请求包含 tools 数组时启用 thinking（默认 true）
+	AutoEnableOnTools bool `mapstructure:"auto_enable_on_tools"`
+	// AutoEnableOnCodeBlock: 请求内容包含 ``` 代码块时启用 thinking（默认 true）
+	AutoEnableOnCodeBlock bool `mapstructure:"auto_enable_on_code_block"`
+	// AutoEnableOnMultiTurn: messages 数量超过阈值时启用 thinking（默认 >2，即多轮对话）
+	AutoEnableOnMultiTurnThreshold int `mapstructure:"auto_enable_on_multi_turn_threshold"`
 }
 
 // Active 返回 Agnes 聊天图片适配是否已启用并配置了有效的限制。
@@ -2141,8 +2173,18 @@ func setDefaults() {
 	// 对象存储凭证不再走环境变量，统一从数据库 settings 表读取
 	viper.SetDefault("agnes_chat.enabled", false)
 	viper.SetDefault("agnes_chat.max_images_per_request", 6)
-	viper.SetDefault("agnes_chat.max_image_bytes", 10485760)   // 10MB（解码后字节）
-	viper.SetDefault("agnes_chat.max_total_bytes", 52428800)   // 50MB（单请求总字节）
+	viper.SetDefault("agnes_chat.max_image_bytes", 10485760) // 10MB（解码后字节）
+	viper.SetDefault("agnes_chat.max_total_bytes", 52428800) // 50MB（单请求总字节）
+
+	// Agnes Thinking 策略：服务端控制 chat_template_kwargs.enable_thinking，
+	// 客户端传入值不直接透传。expose_reasoning 在 C 端必须为 false。
+	// 默认 auto：按确定性规则（tools/代码块/长输入/多轮）决定是否启用增强推理。
+	viper.SetDefault("agnes_chat.thinking.mode", "auto")
+	viper.SetDefault("agnes_chat.thinking.expose_reasoning", false)
+	viper.SetDefault("agnes_chat.thinking.auto_input_chars_threshold", 2000)
+	viper.SetDefault("agnes_chat.thinking.auto_enable_on_tools", true)
+	viper.SetDefault("agnes_chat.thinking.auto_enable_on_code_block", true)
+	viper.SetDefault("agnes_chat.thinking.auto_enable_on_multi_turn_threshold", 2)
 
 	// Ops (vNext)
 	viper.SetDefault("ops.enabled", true)
@@ -3347,6 +3389,22 @@ func (c *Config) Validate() error {
 	}
 	if err := ValidateDingTalkConfig(c.DingTalk); err != nil {
 		return fmt.Errorf("dingtalk_connect: %w", err)
+	}
+
+	// Agnes Thinking 安全策略校验：
+	// expose_reasoning 控制 reasoning 原文是否暴露给客户端。普通 C 端 OpenAI 兼容接口
+	// 必须始终为 false——redactChatCompletionsResponse / redactChatCompletionsStreamChunk
+	// 已经无条件剥离 reasoning 别名，本字段仅用于受限管理诊断通道。
+	// 配置中出现 true 时强制归一化为 false 并记录警告日志（fail-soft + audit）。
+	// 不采用 fail-hard 启动失败，避免误配置导致整个服务不可用；归一化后系统仍按安全策略运行。
+	// 详见项目记忆：C 端响应必须删除 reasoning，expose_reasoning 对普通接口不可配置为 true。
+	if c.AgnesChat.Thinking.ExposeReasoning {
+		slog.Warn("agnes_chat.thinking.expose_reasoning=true is not allowed on public OpenAI-compatible endpoints; forcing to false",
+			"original_value", true,
+			"normalized_value", false,
+			"reason", "C-side response policy requires reasoning to be stripped unconditionally",
+		)
+		c.AgnesChat.Thinking.ExposeReasoning = false
 	}
 	return nil
 }

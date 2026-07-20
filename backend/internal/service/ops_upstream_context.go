@@ -218,6 +218,15 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	if ev.Message != "" {
 		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
 	}
+	// Detail 字段保存的是上游响应正文截断副本（仅当 LogUpstreamErrorBody=true 时填充），
+	// 可能包含 reasoning_content 原文、上游模型名、Authorization、API Key 等。
+	// 必须在写入 DB / 用于 passthrough 规则匹配前做脱敏：
+	//   1. 剥离 reasoning 别名字段（避免 reasoning 原文进入 DB）
+	//   2. 剥离凭证 / URL / deployment 等敏感信息
+	//   3. 替换上游模型名（避免真实上游模型名进入 DB）
+	if ev.Detail != "" {
+		ev.Detail = sanitizeUpstreamErrorDetail(ev.Detail, getUpstreamModelFromContext(c))
+	}
 
 	var existing []*OpsUpstreamErrorEvent
 	if v, ok := c.Get(OpsUpstreamErrorsKey); ok {
@@ -231,6 +240,76 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	c.Set(OpsUpstreamErrorsKey, existing)
 
 	checkSkipMonitoringForUpstreamEvent(c, &evCopy)
+}
+
+// sanitizeUpstreamErrorDetail 对 OpsUpstreamErrorEvent.Detail 字段做脱敏。
+//
+// Detail 是上游响应正文的截断副本（仅在 LogUpstreamErrorBody=true 时填充），
+// 可能包含：
+//   - reasoning_content / reasoning / thinking 等内部推理字段原文
+//   - 上游模型名（如 agnes-2.0-flash）
+//   - Authorization / API Key / Cookie 等凭证
+//   - 完整的上游响应正文（可能含其他敏感 metadata）
+//
+// 处理顺序（必须按此顺序执行，避免正则脱敏破坏 JSON 结构导致 reasoning/凭证残留）：
+//  1. 若 detail 看起来是 JSON，先结构化处理：
+//     a. 解析后递归 redact 敏感 key（api_key/authorization/token/secret 等）为 "[REDACTED]"
+//     b. 结构化剥离 choices[].message/delta 上的 reasoning 别名字段
+//     （自由文本正则无法可靠匹配 JSON 形式的 `"api_key":"value"`，因为 JSON 的
+//     引号与冒号布局与 query 参数形式 `api_key=value` 不同；正则替换可能破坏 JSON 结构）
+//  2. 调用 sanitizeUpstreamErrorMessage 剥离 URL / deployment / 供应商身份关键词等
+//     （正则在已结构化清理后的 JSON 字符串上运行，不会破坏 reasoning 字段删除）
+//  3. 调用 redactUpstreamModelInMessage 替换上游模型名为 "model"
+//
+// 不破坏通用错误关键词（如 rate_limit / quota_exceeded）的 passthrough 规则匹配。
+// reasoning 原文一律剥离，不进入 DB / 日志 / tracing。
+func sanitizeUpstreamErrorDetail(detail, upstreamModel string) string {
+	if detail == "" {
+		return detail
+	}
+
+	out := detail
+
+	// 步骤 1：若为 JSON，先结构化清理（敏感 key + reasoning 字段）。
+	// 必须在自由文本正则脱敏前执行，避免正则替换破坏 JSON 结构或漏匹配 JSON 形式凭证。
+	trimmed := strings.TrimSpace(out)
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+		// 1a. 结构化 redact 敏感 key（api_key/authorization/token/secret 等递归替换为 [REDACTED]）
+		if redacted := redactSensitiveJSONInString(trimmed); redacted != "" {
+			out = redacted
+		}
+		// 1b. 结构化剥离 reasoning 字段（choices[].message / choices[].delta）
+		if redacted := stripReasoningFromChoices([]byte(out)); redacted != nil {
+			out = string(redacted)
+		}
+	}
+
+	// 步骤 2：剥离 URL / deployment / 供应商身份关键词（自由文本正则脱敏）
+	out = sanitizeUpstreamErrorMessage(out)
+
+	// 步骤 3：替换上游模型名（如 agnes-2.0-flash → model）
+	out = redactUpstreamModelInMessage(out, upstreamModel)
+
+	return out
+}
+
+// redactSensitiveJSONInString 解析 JSON 字符串，递归将敏感 key（api_key/authorization/
+// token/secret 等，见 isSensitiveKey）的值替换为 "[REDACTED]"，再重新序列化为 JSON 字符串。
+// 若解析失败，原样返回输入。
+func redactSensitiveJSONInString(jsonStr string) string {
+	if jsonStr == "" {
+		return jsonStr
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		return jsonStr
+	}
+	redacted := redactSensitiveJSON(parsed)
+	out, err := json.Marshal(redacted)
+	if err != nil {
+		return jsonStr
+	}
+	return string(out)
 }
 
 // checkSkipMonitoringForUpstreamEvent checks whether the upstream error event
