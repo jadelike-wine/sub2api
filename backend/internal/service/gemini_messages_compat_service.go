@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -2877,13 +2876,8 @@ func isGeminiInlineImageMIMEType(mimeType string) bool {
 	}
 }
 
-func isValidBase64(data string) bool {
-	if data == "" {
-		return false
-	}
-	_, err := base64.StdEncoding.DecodeString(data)
-	return err == nil
-}
+// isValidBase64 定义在 agnes_chat_image_adapter.go（同一 package service）。
+// 采用流式解码 + 前 64KB 校验，避免大字符串 OOM 与高 CPU 开销。
 
 func extractGeminiUsage(data []byte) *ClaudeUsage {
 	usage := gjson.GetBytes(data, "usageMetadata")
