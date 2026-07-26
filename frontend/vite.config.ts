@@ -5,6 +5,49 @@ import VueDevTools from 'vite-plugin-vue-devtools'
 import { resolve } from 'path'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character] || character)
+}
+
+function isSafeImageUrl(value: string): boolean {
+  const trimmed = value.trim()
+  if ((trimmed.startsWith('/') && !trimmed.startsWith('//')) || /^data:image\//i.test(trimmed)) {
+    return true
+  }
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function injectBranding(html: string, config: { site_name?: string; site_logo?: string }): string {
+  let brandedHtml = html
+  const siteName = config.site_name?.trim()
+  if (siteName) {
+    brandedHtml = brandedHtml.replace(
+      /<title>[^<]*<\/title>/i,
+      `<title>${escapeHtml(siteName)} - AI API Gateway</title>`,
+    )
+  }
+
+  const siteLogo = config.site_logo?.trim()
+  if (siteLogo && isSafeImageUrl(siteLogo)) {
+    brandedHtml = brandedHtml.replace(
+      /<link\s+rel=["']icon["'][^>]*>/i,
+      `<link rel="icon" href="${escapeHtml(siteLogo)}" />`,
+    )
+  }
+  return brandedHtml
+}
+
 /**
  * Vite 插件：开发模式下注入公开配置到 index.html
  * 与生产模式的后端注入行为保持一致，消除闪烁
@@ -24,7 +67,7 @@ function injectPublicSettings(backendUrl: string): Plugin {
             const data = await response.json()
             if (data.code === 0 && data.data) {
               const script = `<script>window.__APP_CONFIG__=${JSON.stringify(data.data)};</script>`
-              return html.replace('</head>', `${script}\n</head>`)
+              return injectBranding(html, data.data).replace('</head>', `${script}\n</head>`)
             }
           }
         } catch (e) {

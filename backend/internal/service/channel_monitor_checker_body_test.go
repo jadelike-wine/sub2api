@@ -542,6 +542,44 @@ func TestMonitorChallengeMaxTokens_DefaultIs50(t *testing.T) {
 	}
 }
 
+func TestExtractAnthropicMonitorText(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "text block after thinking",
+			body: `{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"2"}]}`,
+			want: "2",
+		},
+		{
+			name: "single text block",
+			body: `{"content":[{"type":"text","text":"2"}]}`,
+			want: "2",
+		},
+		{
+			name: "thinking only",
+			body: `{"content":[{"type":"thinking","thinking":""}]}`,
+			want: "",
+		},
+		{
+			name: "multiple text blocks",
+			body: `{"content":[{"type":"text","text":"answer"},{"type":"tool_use","name":"x"},{"type":"text","text":"2"}]}`,
+			want: "answer\n2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractAnthropicMonitorText([]byte(tt.body))
+			if got != tt.want {
+				t.Fatalf("extractAnthropicMonitorText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // captureHandlerView / openAICaptureHandlerView 是为了让上面表驱动测试
 // 用统一的 lastBodyMap() 接口读取两种 handler 的 lastBody 字段。
 type captureHandlerView struct{ h *captureHandler }
@@ -844,5 +882,14 @@ func TestRunChecksConcurrent_InjectsDisableThinkingOverride(t *testing.T) {
 	// monitorChallengeMaxTokens=50 也应一并出现在请求体中
 	if mt, ok := h.lastBody["max_tokens"].(float64); !ok || int(mt) != 50 {
 		t.Errorf("expected max_tokens=50, got %v", h.lastBody["max_tokens"])
+	}
+}
+
+func TestValidateChallenge_AnthropicTextAfterThinking(t *testing.T) {
+	body := []byte(`{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"答案是 2"}]}`)
+	respText := extractAnthropicMonitorText(body)
+
+	if !validateChallenge(respText, "2") {
+		t.Fatalf("validateChallenge(%q, %q) = false, want true", respText, "2")
 	}
 }
