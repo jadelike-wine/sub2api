@@ -93,6 +93,33 @@ export default {
         }
       }
     },
+    // Product Capabilities section
+    productCapabilities: {
+      title: 'Product Capabilities',
+      subtitle: 'From AI API relay to image generation — all in one place',
+      items: {
+        apiRelay: {
+          title: 'LLM API Relay',
+          description: 'A unified, stable OpenAI-compatible interface that flexibly connects to multiple LLM services.',
+        },
+        imageGen: {
+          title: 'AI Image Generation',
+          description: 'Quickly generate high-quality AI images from simple text or image prompts.',
+        },
+        videoGen: {
+          title: 'AI Video Generation',
+          description: 'Turn text and images into dynamic video content. This capability is under construction.',
+        },
+        quantTrading: {
+          title: 'A-Share Quantitative Trading',
+          description: 'Data analysis, strategy research and quantitative tools for the A-share market. Currently in planning.',
+        },
+      },
+      statusLive: 'Live',
+      statusPlanned: 'Planned',
+      actionLive: 'Use Now',
+      actionPlanned: 'Coming Soon',
+    },
     providers: {
       title: 'Supported AI Models',
       description: 'One API, Multiple Choices',
