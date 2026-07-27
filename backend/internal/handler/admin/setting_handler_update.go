@@ -336,6 +336,12 @@ type UpdateSettingsRequest struct {
 	AuthSourceDingTalkPlatformQuotas map[string]*service.DefaultPlatformQuotaSetting `json:"auth_source_default_dingtalk_platform_quotas"`
 
 	AllowUserViewErrorRequests *bool `json:"allow_user_view_error_requests"`
+
+	// 每日签到设置
+	DailyCheckinEnabled    *bool    `json:"daily_checkin_enabled"`
+	DailyCheckinRewardMin  *float64 `json:"daily_checkin_reward_min"`
+	DailyCheckinRewardMax  *float64 `json:"daily_checkin_reward_max"`
+	DailyCheckinTimezone   *string  `json:"daily_checkin_timezone"`
 }
 
 // UpdateSettings 更新系统设置
@@ -1385,6 +1391,30 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.AllowUserViewErrorRequests
 		}(),
+		DailyCheckinEnabled: func() bool {
+			if req.DailyCheckinEnabled != nil {
+				return *req.DailyCheckinEnabled
+			}
+			return previousSettings.DailyCheckinEnabled
+		}(),
+		DailyCheckinRewardMin: func() float64 {
+			if req.DailyCheckinRewardMin != nil {
+				return *req.DailyCheckinRewardMin
+			}
+			return previousSettings.DailyCheckinRewardMin
+		}(),
+		DailyCheckinRewardMax: func() float64 {
+			if req.DailyCheckinRewardMax != nil {
+				return *req.DailyCheckinRewardMax
+			}
+			return previousSettings.DailyCheckinRewardMax
+		}(),
+		DailyCheckinTimezone: func() string {
+			if req.DailyCheckinTimezone != nil {
+				return *req.DailyCheckinTimezone
+			}
+			return previousSettings.DailyCheckinTimezone
+		}(),
 		OpsMonitoringEnabled: func() bool {
 			if req.OpsMonitoringEnabled != nil {
 				return *req.OpsMonitoringEnabled
@@ -2001,6 +2031,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		CyberSessionBlockEnabled:    updatedSettings.CyberSessionBlockEnabled,
 		CyberSessionBlockTTLSeconds: updatedSettings.CyberSessionBlockTTLSeconds,
 		AllowUserViewErrorRequests:  updatedSettings.AllowUserViewErrorRequests,
+		DailyCheckinEnabled:         updatedSettings.DailyCheckinEnabled,
+		DailyCheckinRewardMin:       updatedSettings.DailyCheckinRewardMin,
+		DailyCheckinRewardMax:       updatedSettings.DailyCheckinRewardMax,
+		DailyCheckinTimezone:        updatedSettings.DailyCheckinTimezone,
 	}
 	if fastPolicy, err := h.settingService.GetOpenAIFastPolicySettings(c.Request.Context()); err != nil {
 		slog.Error("openai_fast_policy_settings_get_failed", "error", err)

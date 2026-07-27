@@ -98,6 +98,18 @@ export default {
           },
         },
       },
+      dailyCheckin: {
+        title: '每日签到',
+        description: '用户每日签到可随机获得余额奖励，帮助提高活跃度。默认关闭。',
+        enabled: '启用每日签到',
+        enabledHint: '关闭后用户端签到卡片隐藏，签到接口不可用。',
+        rewardMin: '最小奖励金额',
+        rewardMinHint: '单次签到可获得的最小随机奖励（USD）。',
+        rewardMax: '最大奖励金额',
+        rewardMaxHint: '单次签到可获得的最大随机奖励（USD），不能小于最小奖励。',
+        timezone: '业务时区',
+        timezoneHint: '按此时区计算签到日期（IANA 时区标识，如 Asia/Shanghai）。',
+      },
       emailTabDisabledTitle: '邮箱验证未启用',
       emailTabDisabledHint: '请在「安全与认证」选项卡中启用邮箱验证后，再配置 SMTP 设置。',
       registration: {

@@ -304,6 +304,12 @@ type SystemSettings struct {
 
 	// 允许终端用户在用量页查看自己的失败请求
 	AllowUserViewErrorRequests bool `json:"allow_user_view_error_requests"`
+
+	// 每日签到
+	DailyCheckinEnabled    bool    `json:"daily_checkin_enabled"`
+	DailyCheckinRewardMin  float64 `json:"daily_checkin_reward_min"`
+	DailyCheckinRewardMax  float64 `json:"daily_checkin_reward_max"`
+	DailyCheckinTimezone   string  `json:"daily_checkin_timezone"`
 }
 
 type DefaultSubscriptionSetting struct {
@@ -374,6 +380,8 @@ type PublicSettings struct {
 	RiskControlEnabled bool `json:"risk_control_enabled"`
 
 	AllowUserViewErrorRequests bool `json:"allow_user_view_error_requests"`
+
+	DailyCheckinEnabled bool `json:"daily_checkin_enabled"`
 }
 
 type LoginAgreementDocument struct {

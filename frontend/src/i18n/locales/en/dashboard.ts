@@ -56,7 +56,24 @@ export default {
     viewUsage: 'View Usage',
     checkDetailedLogs: 'Check detailed usage logs',
     redeemCode: 'Redeem Code',
-    addBalanceWithCode: 'Add balance with a code'
+    addBalanceWithCode: 'Add balance with a code',
+    checkin: {
+      title: 'Daily Check-in',
+      description: 'Check in to claim a random balance reward',
+      todayDate: "Today's Date",
+      rewardRange: 'Reward Range',
+      checkedIn: 'Checked in today',
+      notCheckedIn: 'Not checked in yet',
+      checkinButton: 'Check In Now',
+      checking: 'Checking in...',
+      checkinSuccess: 'Check-in successful! Earned ${amount}',
+      checkinFailed: 'Check-in failed',
+      alreadyDone: 'Already checked in today, come back tomorrow',
+      disabled: 'Check-in feature is not available',
+      rewardAmount: 'Reward',
+      newBalance: 'Current Balance',
+      lastCheckinAt: 'Check-in Time',
+    }
   },
 
   // Groups (shared)

@@ -1,6 +1,9 @@
 package service
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
@@ -9,6 +12,15 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// parseFloatDefault parses a string to float64, returning defaultValue on error.
+func parseFloatDefault(value string, defaultValue float64) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil {
+		return defaultValue
+	}
+	return v
 }
 
 type SystemSettings struct {
@@ -268,6 +280,12 @@ type SystemSettings struct {
 
 	// 允许终端用户在用量页查看自己的失败请求
 	AllowUserViewErrorRequests bool
+
+	// 每日签到
+	DailyCheckinEnabled    bool
+	DailyCheckinRewardMin  float64
+	DailyCheckinRewardMax  float64
+	DailyCheckinTimezone   string
 }
 
 type DefaultSubscriptionSetting struct {
@@ -341,6 +359,9 @@ type PublicSettings struct {
 
 	// 允许终端用户在用量页查看自己的失败请求
 	AllowUserViewErrorRequests bool `json:"allow_user_view_error_requests"`
+
+	// 每日签到功能开关
+	DailyCheckinEnabled bool `json:"daily_checkin_enabled"`
 }
 
 type LoginAgreementDocument struct {

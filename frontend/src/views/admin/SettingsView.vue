@@ -6695,6 +6695,90 @@
           </div>
         </div>
 
+        <!-- Daily Check-in feature card -->
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.features.dailyCheckin.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.features.dailyCheckin.description') }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.features.dailyCheckin.enabled') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.dailyCheckin.enabledHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.daily_checkin_enabled" />
+            </div>
+
+            <div v-if="form.daily_checkin_enabled" class="space-y-6">
+              <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label class="input-label">
+                    {{ t('admin.settings.features.dailyCheckin.rewardMin') }}
+                  </label>
+                  <div class="relative">
+                    <input
+                      v-model.number="form.daily_checkin_reward_min"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      class="input pr-8"
+                      placeholder="0"
+                    />
+                    <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
+                  </div>
+                  <p class="mt-1 text-xs text-gray-400">
+                    {{ t('admin.settings.features.dailyCheckin.rewardMinHint') }}
+                  </p>
+                </div>
+
+                <div>
+                  <label class="input-label">
+                    {{ t('admin.settings.features.dailyCheckin.rewardMax') }}
+                  </label>
+                  <div class="relative">
+                    <input
+                      v-model.number="form.daily_checkin_reward_max"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      class="input pr-8"
+                      placeholder="1"
+                    />
+                    <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
+                  </div>
+                  <p class="mt-1 text-xs text-gray-400">
+                    {{ t('admin.settings.features.dailyCheckin.rewardMaxHint') }}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <label class="input-label">
+                  {{ t('admin.settings.features.dailyCheckin.timezone') }}
+                </label>
+                <input
+                  v-model="form.daily_checkin_timezone"
+                  type="text"
+                  class="input max-w-xs font-mono text-sm"
+                  placeholder="Asia/Shanghai"
+                />
+                <p class="mt-1 text-xs text-gray-400">
+                  {{ t('admin.settings.features.dailyCheckin.timezoneHint') }}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
         </div><!-- /Tab: Features -->
 
         <!-- Tab: Email -->
@@ -8732,6 +8816,11 @@ const form = reactive<SettingsForm>({
   affiliate_enabled: false,
   // Allow user view error requests
   allow_user_view_error_requests: false,
+  // Daily check-in feature
+  daily_checkin_enabled: false,
+  daily_checkin_reward_min: 0,
+  daily_checkin_reward_max: 1,
+  daily_checkin_timezone: 'Asia/Shanghai',
 });
 
 type OpenAIAdvancedSchedulerOverrideKey =
@@ -10275,6 +10364,11 @@ async function saveSettings() {
       // Affiliate (邀请返利) feature switch
       affiliate_enabled: form.affiliate_enabled,
       allow_user_view_error_requests: form.allow_user_view_error_requests,
+      // Daily check-in feature
+      daily_checkin_enabled: form.daily_checkin_enabled,
+      daily_checkin_reward_min: Math.max(0, Number(form.daily_checkin_reward_min) || 0),
+      daily_checkin_reward_max: Math.max(0, Number(form.daily_checkin_reward_max) || 0),
+      daily_checkin_timezone: form.daily_checkin_timezone || 'Asia/Shanghai',
     };
 
     // 仅当 openai_fast_policy_settings 已成功从后端加载时才回写，

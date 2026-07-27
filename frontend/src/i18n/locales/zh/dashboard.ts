@@ -56,7 +56,24 @@ export default {
     viewUsage: '查看使用记录',
     checkDetailedLogs: '查看详细的使用日志',
     redeemCode: '兑换码',
-    addBalanceWithCode: '使用兑换码充值'
+    addBalanceWithCode: '使用兑换码充值',
+    checkin: {
+      title: '每日签到',
+      description: '签到领取随机余额奖励',
+      todayDate: '今日日期',
+      rewardRange: '奖励范围',
+      checkedIn: '今日已签到',
+      notCheckedIn: '今日尚未签到',
+      checkinButton: '立即签到',
+      checking: '签到中...',
+      checkinSuccess: '签到成功！获得 ${amount}',
+      checkinFailed: '签到失败',
+      alreadyDone: '今日已签到，明天再来吧',
+      disabled: '签到功能暂未开放',
+      rewardAmount: '本次奖励',
+      newBalance: '当前余额',
+      lastCheckinAt: '签到时间',
+    }
   },
 
   // Groups (shared)

@@ -27,6 +27,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorrequesttemplate"
 	"github.com/Wei-Shaw/sub2api/ent/compositemodelroute"
+	"github.com/Wei-Shaw/sub2api/ent/dailycheckin"
 	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
@@ -83,6 +84,7 @@ const (
 	TypeChannelMonitorHistory         = "ChannelMonitorHistory"
 	TypeChannelMonitorRequestTemplate = "ChannelMonitorRequestTemplate"
 	TypeCompositeModelRoute           = "CompositeModelRoute"
+	TypeDailyCheckin                  = "DailyCheckin"
 	TypeErrorPassthroughRule          = "ErrorPassthroughRule"
 	TypeGroup                         = "Group"
 	TypeIdempotencyRecord             = "IdempotencyRecord"
@@ -20527,6 +20529,692 @@ func (m *CompositeModelRouteMutation) ResetEdge(name string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown CompositeModelRoute edge %s", name)
+}
+
+// DailyCheckinMutation represents an operation that mutates the DailyCheckin nodes in the graph.
+type DailyCheckinMutation struct {
+	config
+	op               Op
+	typ              string
+	id               *int64
+	created_at       *time.Time
+	updated_at       *time.Time
+	reward_amount    *float64
+	addreward_amount *float64
+	checkin_date     *string
+	checkin_at       *time.Time
+	clearedFields    map[string]struct{}
+	user             *int64
+	cleareduser      bool
+	done             bool
+	oldValue         func(context.Context) (*DailyCheckin, error)
+	predicates       []predicate.DailyCheckin
+}
+
+var _ ent.Mutation = (*DailyCheckinMutation)(nil)
+
+// dailycheckinOption allows management of the mutation configuration using functional options.
+type dailycheckinOption func(*DailyCheckinMutation)
+
+// newDailyCheckinMutation creates new mutation for the DailyCheckin entity.
+func newDailyCheckinMutation(c config, op Op, opts ...dailycheckinOption) *DailyCheckinMutation {
+	m := &DailyCheckinMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeDailyCheckin,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withDailyCheckinID sets the ID field of the mutation.
+func withDailyCheckinID(id int64) dailycheckinOption {
+	return func(m *DailyCheckinMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *DailyCheckin
+		)
+		m.oldValue = func(ctx context.Context) (*DailyCheckin, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().DailyCheckin.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withDailyCheckin sets the old DailyCheckin of the mutation.
+func withDailyCheckin(node *DailyCheckin) dailycheckinOption {
+	return func(m *DailyCheckinMutation) {
+		m.oldValue = func(context.Context) (*DailyCheckin, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m DailyCheckinMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m DailyCheckinMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *DailyCheckinMutation) ID() (id int64, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *DailyCheckinMutation) IDs(ctx context.Context) ([]int64, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int64{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().DailyCheckin.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetCreatedAt sets the "created_at" field.
+func (m *DailyCheckinMutation) SetCreatedAt(t time.Time) {
+	m.created_at = &t
+}
+
+// CreatedAt returns the value of the "created_at" field in the mutation.
+func (m *DailyCheckinMutation) CreatedAt() (r time.Time, exists bool) {
+	v := m.created_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCreatedAt returns the old "created_at" field's value of the DailyCheckin entity.
+// If the DailyCheckin object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *DailyCheckinMutation) OldCreatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCreatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCreatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCreatedAt: %w", err)
+	}
+	return oldValue.CreatedAt, nil
+}
+
+// ResetCreatedAt resets all changes to the "created_at" field.
+func (m *DailyCheckinMutation) ResetCreatedAt() {
+	m.created_at = nil
+}
+
+// SetUpdatedAt sets the "updated_at" field.
+func (m *DailyCheckinMutation) SetUpdatedAt(t time.Time) {
+	m.updated_at = &t
+}
+
+// UpdatedAt returns the value of the "updated_at" field in the mutation.
+func (m *DailyCheckinMutation) UpdatedAt() (r time.Time, exists bool) {
+	v := m.updated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUpdatedAt returns the old "updated_at" field's value of the DailyCheckin entity.
+// If the DailyCheckin object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *DailyCheckinMutation) OldUpdatedAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUpdatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUpdatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUpdatedAt: %w", err)
+	}
+	return oldValue.UpdatedAt, nil
+}
+
+// ResetUpdatedAt resets all changes to the "updated_at" field.
+func (m *DailyCheckinMutation) ResetUpdatedAt() {
+	m.updated_at = nil
+}
+
+// SetUserID sets the "user_id" field.
+func (m *DailyCheckinMutation) SetUserID(i int64) {
+	m.user = &i
+}
+
+// UserID returns the value of the "user_id" field in the mutation.
+func (m *DailyCheckinMutation) UserID() (r int64, exists bool) {
+	v := m.user
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldUserID returns the old "user_id" field's value of the DailyCheckin entity.
+// If the DailyCheckin object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *DailyCheckinMutation) OldUserID(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldUserID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldUserID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldUserID: %w", err)
+	}
+	return oldValue.UserID, nil
+}
+
+// ResetUserID resets all changes to the "user_id" field.
+func (m *DailyCheckinMutation) ResetUserID() {
+	m.user = nil
+}
+
+// SetRewardAmount sets the "reward_amount" field.
+func (m *DailyCheckinMutation) SetRewardAmount(f float64) {
+	m.reward_amount = &f
+	m.addreward_amount = nil
+}
+
+// RewardAmount returns the value of the "reward_amount" field in the mutation.
+func (m *DailyCheckinMutation) RewardAmount() (r float64, exists bool) {
+	v := m.reward_amount
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRewardAmount returns the old "reward_amount" field's value of the DailyCheckin entity.
+// If the DailyCheckin object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *DailyCheckinMutation) OldRewardAmount(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRewardAmount is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRewardAmount requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRewardAmount: %w", err)
+	}
+	return oldValue.RewardAmount, nil
+}
+
+// AddRewardAmount adds f to the "reward_amount" field.
+func (m *DailyCheckinMutation) AddRewardAmount(f float64) {
+	if m.addreward_amount != nil {
+		*m.addreward_amount += f
+	} else {
+		m.addreward_amount = &f
+	}
+}
+
+// AddedRewardAmount returns the value that was added to the "reward_amount" field in this mutation.
+func (m *DailyCheckinMutation) AddedRewardAmount() (r float64, exists bool) {
+	v := m.addreward_amount
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetRewardAmount resets all changes to the "reward_amount" field.
+func (m *DailyCheckinMutation) ResetRewardAmount() {
+	m.reward_amount = nil
+	m.addreward_amount = nil
+}
+
+// SetCheckinDate sets the "checkin_date" field.
+func (m *DailyCheckinMutation) SetCheckinDate(s string) {
+	m.checkin_date = &s
+}
+
+// CheckinDate returns the value of the "checkin_date" field in the mutation.
+func (m *DailyCheckinMutation) CheckinDate() (r string, exists bool) {
+	v := m.checkin_date
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCheckinDate returns the old "checkin_date" field's value of the DailyCheckin entity.
+// If the DailyCheckin object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *DailyCheckinMutation) OldCheckinDate(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCheckinDate is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCheckinDate requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCheckinDate: %w", err)
+	}
+	return oldValue.CheckinDate, nil
+}
+
+// ResetCheckinDate resets all changes to the "checkin_date" field.
+func (m *DailyCheckinMutation) ResetCheckinDate() {
+	m.checkin_date = nil
+}
+
+// SetCheckinAt sets the "checkin_at" field.
+func (m *DailyCheckinMutation) SetCheckinAt(t time.Time) {
+	m.checkin_at = &t
+}
+
+// CheckinAt returns the value of the "checkin_at" field in the mutation.
+func (m *DailyCheckinMutation) CheckinAt() (r time.Time, exists bool) {
+	v := m.checkin_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCheckinAt returns the old "checkin_at" field's value of the DailyCheckin entity.
+// If the DailyCheckin object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *DailyCheckinMutation) OldCheckinAt(ctx context.Context) (v time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCheckinAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCheckinAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCheckinAt: %w", err)
+	}
+	return oldValue.CheckinAt, nil
+}
+
+// ResetCheckinAt resets all changes to the "checkin_at" field.
+func (m *DailyCheckinMutation) ResetCheckinAt() {
+	m.checkin_at = nil
+}
+
+// ClearUser clears the "user" edge to the User entity.
+func (m *DailyCheckinMutation) ClearUser() {
+	m.cleareduser = true
+	m.clearedFields[dailycheckin.FieldUserID] = struct{}{}
+}
+
+// UserCleared reports if the "user" edge to the User entity was cleared.
+func (m *DailyCheckinMutation) UserCleared() bool {
+	return m.cleareduser
+}
+
+// UserIDs returns the "user" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// UserID instead. It exists only for internal usage by the builders.
+func (m *DailyCheckinMutation) UserIDs() (ids []int64) {
+	if id := m.user; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetUser resets all changes to the "user" edge.
+func (m *DailyCheckinMutation) ResetUser() {
+	m.user = nil
+	m.cleareduser = false
+}
+
+// Where appends a list predicates to the DailyCheckinMutation builder.
+func (m *DailyCheckinMutation) Where(ps ...predicate.DailyCheckin) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the DailyCheckinMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *DailyCheckinMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.DailyCheckin, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *DailyCheckinMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *DailyCheckinMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (DailyCheckin).
+func (m *DailyCheckinMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *DailyCheckinMutation) Fields() []string {
+	fields := make([]string, 0, 6)
+	if m.created_at != nil {
+		fields = append(fields, dailycheckin.FieldCreatedAt)
+	}
+	if m.updated_at != nil {
+		fields = append(fields, dailycheckin.FieldUpdatedAt)
+	}
+	if m.user != nil {
+		fields = append(fields, dailycheckin.FieldUserID)
+	}
+	if m.reward_amount != nil {
+		fields = append(fields, dailycheckin.FieldRewardAmount)
+	}
+	if m.checkin_date != nil {
+		fields = append(fields, dailycheckin.FieldCheckinDate)
+	}
+	if m.checkin_at != nil {
+		fields = append(fields, dailycheckin.FieldCheckinAt)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *DailyCheckinMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case dailycheckin.FieldCreatedAt:
+		return m.CreatedAt()
+	case dailycheckin.FieldUpdatedAt:
+		return m.UpdatedAt()
+	case dailycheckin.FieldUserID:
+		return m.UserID()
+	case dailycheckin.FieldRewardAmount:
+		return m.RewardAmount()
+	case dailycheckin.FieldCheckinDate:
+		return m.CheckinDate()
+	case dailycheckin.FieldCheckinAt:
+		return m.CheckinAt()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *DailyCheckinMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case dailycheckin.FieldCreatedAt:
+		return m.OldCreatedAt(ctx)
+	case dailycheckin.FieldUpdatedAt:
+		return m.OldUpdatedAt(ctx)
+	case dailycheckin.FieldUserID:
+		return m.OldUserID(ctx)
+	case dailycheckin.FieldRewardAmount:
+		return m.OldRewardAmount(ctx)
+	case dailycheckin.FieldCheckinDate:
+		return m.OldCheckinDate(ctx)
+	case dailycheckin.FieldCheckinAt:
+		return m.OldCheckinAt(ctx)
+	}
+	return nil, fmt.Errorf("unknown DailyCheckin field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *DailyCheckinMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case dailycheckin.FieldCreatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCreatedAt(v)
+		return nil
+	case dailycheckin.FieldUpdatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUpdatedAt(v)
+		return nil
+	case dailycheckin.FieldUserID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetUserID(v)
+		return nil
+	case dailycheckin.FieldRewardAmount:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRewardAmount(v)
+		return nil
+	case dailycheckin.FieldCheckinDate:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCheckinDate(v)
+		return nil
+	case dailycheckin.FieldCheckinAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCheckinAt(v)
+		return nil
+	}
+	return fmt.Errorf("unknown DailyCheckin field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *DailyCheckinMutation) AddedFields() []string {
+	var fields []string
+	if m.addreward_amount != nil {
+		fields = append(fields, dailycheckin.FieldRewardAmount)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *DailyCheckinMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case dailycheckin.FieldRewardAmount:
+		return m.AddedRewardAmount()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *DailyCheckinMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case dailycheckin.FieldRewardAmount:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddRewardAmount(v)
+		return nil
+	}
+	return fmt.Errorf("unknown DailyCheckin numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *DailyCheckinMutation) ClearedFields() []string {
+	return nil
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *DailyCheckinMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *DailyCheckinMutation) ClearField(name string) error {
+	return fmt.Errorf("unknown DailyCheckin nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *DailyCheckinMutation) ResetField(name string) error {
+	switch name {
+	case dailycheckin.FieldCreatedAt:
+		m.ResetCreatedAt()
+		return nil
+	case dailycheckin.FieldUpdatedAt:
+		m.ResetUpdatedAt()
+		return nil
+	case dailycheckin.FieldUserID:
+		m.ResetUserID()
+		return nil
+	case dailycheckin.FieldRewardAmount:
+		m.ResetRewardAmount()
+		return nil
+	case dailycheckin.FieldCheckinDate:
+		m.ResetCheckinDate()
+		return nil
+	case dailycheckin.FieldCheckinAt:
+		m.ResetCheckinAt()
+		return nil
+	}
+	return fmt.Errorf("unknown DailyCheckin field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *DailyCheckinMutation) AddedEdges() []string {
+	edges := make([]string, 0, 1)
+	if m.user != nil {
+		edges = append(edges, dailycheckin.EdgeUser)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *DailyCheckinMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case dailycheckin.EdgeUser:
+		if id := m.user; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *DailyCheckinMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 1)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *DailyCheckinMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *DailyCheckinMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 1)
+	if m.cleareduser {
+		edges = append(edges, dailycheckin.EdgeUser)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *DailyCheckinMutation) EdgeCleared(name string) bool {
+	switch name {
+	case dailycheckin.EdgeUser:
+		return m.cleareduser
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *DailyCheckinMutation) ClearEdge(name string) error {
+	switch name {
+	case dailycheckin.EdgeUser:
+		m.ClearUser()
+		return nil
+	}
+	return fmt.Errorf("unknown DailyCheckin unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *DailyCheckinMutation) ResetEdge(name string) error {
+	switch name {
+	case dailycheckin.EdgeUser:
+		m.ResetUser()
+		return nil
+	}
+	return fmt.Errorf("unknown DailyCheckin edge %s", name)
 }
 
 // ErrorPassthroughRuleMutation represents an operation that mutates the ErrorPassthroughRule nodes in the graph.
@@ -52392,6 +53080,9 @@ type UserMutation struct {
 	platform_quotas               map[int64]struct{}
 	removedplatform_quotas        map[int64]struct{}
 	clearedplatform_quotas        bool
+	daily_checkins                map[int64]struct{}
+	removeddaily_checkins         map[int64]struct{}
+	cleareddaily_checkins         bool
 	done                          bool
 	oldValue                      func(context.Context) (*User, error)
 	predicates                    []predicate.User
@@ -54260,6 +54951,60 @@ func (m *UserMutation) ResetPlatformQuotas() {
 	m.removedplatform_quotas = nil
 }
 
+// AddDailyCheckinIDs adds the "daily_checkins" edge to the DailyCheckin entity by ids.
+func (m *UserMutation) AddDailyCheckinIDs(ids ...int64) {
+	if m.daily_checkins == nil {
+		m.daily_checkins = make(map[int64]struct{})
+	}
+	for i := range ids {
+		m.daily_checkins[ids[i]] = struct{}{}
+	}
+}
+
+// ClearDailyCheckins clears the "daily_checkins" edge to the DailyCheckin entity.
+func (m *UserMutation) ClearDailyCheckins() {
+	m.cleareddaily_checkins = true
+}
+
+// DailyCheckinsCleared reports if the "daily_checkins" edge to the DailyCheckin entity was cleared.
+func (m *UserMutation) DailyCheckinsCleared() bool {
+	return m.cleareddaily_checkins
+}
+
+// RemoveDailyCheckinIDs removes the "daily_checkins" edge to the DailyCheckin entity by IDs.
+func (m *UserMutation) RemoveDailyCheckinIDs(ids ...int64) {
+	if m.removeddaily_checkins == nil {
+		m.removeddaily_checkins = make(map[int64]struct{})
+	}
+	for i := range ids {
+		delete(m.daily_checkins, ids[i])
+		m.removeddaily_checkins[ids[i]] = struct{}{}
+	}
+}
+
+// RemovedDailyCheckins returns the removed IDs of the "daily_checkins" edge to the DailyCheckin entity.
+func (m *UserMutation) RemovedDailyCheckinsIDs() (ids []int64) {
+	for id := range m.removeddaily_checkins {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// DailyCheckinsIDs returns the "daily_checkins" edge IDs in the mutation.
+func (m *UserMutation) DailyCheckinsIDs() (ids []int64) {
+	for id := range m.daily_checkins {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetDailyCheckins resets all changes to the "daily_checkins" edge.
+func (m *UserMutation) ResetDailyCheckins() {
+	m.daily_checkins = nil
+	m.cleareddaily_checkins = false
+	m.removeddaily_checkins = nil
+}
+
 // Where appends a list predicates to the UserMutation builder.
 func (m *UserMutation) Where(ps ...predicate.User) {
 	m.predicates = append(m.predicates, ps...)
@@ -54898,7 +55643,7 @@ func (m *UserMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *UserMutation) AddedEdges() []string {
-	edges := make([]string, 0, 13)
+	edges := make([]string, 0, 14)
 	if m.api_keys != nil {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
@@ -54937,6 +55682,9 @@ func (m *UserMutation) AddedEdges() []string {
 	}
 	if m.platform_quotas != nil {
 		edges = append(edges, user.EdgePlatformQuotas)
+	}
+	if m.daily_checkins != nil {
+		edges = append(edges, user.EdgeDailyCheckins)
 	}
 	return edges
 }
@@ -55023,13 +55771,19 @@ func (m *UserMutation) AddedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case user.EdgeDailyCheckins:
+		ids := make([]ent.Value, 0, len(m.daily_checkins))
+		for id := range m.daily_checkins {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 	return nil
 }
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *UserMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 13)
+	edges := make([]string, 0, 14)
 	if m.removedapi_keys != nil {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
@@ -55068,6 +55822,9 @@ func (m *UserMutation) RemovedEdges() []string {
 	}
 	if m.removedplatform_quotas != nil {
 		edges = append(edges, user.EdgePlatformQuotas)
+	}
+	if m.removeddaily_checkins != nil {
+		edges = append(edges, user.EdgeDailyCheckins)
 	}
 	return edges
 }
@@ -55154,13 +55911,19 @@ func (m *UserMutation) RemovedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case user.EdgeDailyCheckins:
+		ids := make([]ent.Value, 0, len(m.removeddaily_checkins))
+		for id := range m.removeddaily_checkins {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 	return nil
 }
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *UserMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 13)
+	edges := make([]string, 0, 14)
 	if m.clearedapi_keys {
 		edges = append(edges, user.EdgeAPIKeys)
 	}
@@ -55200,6 +55963,9 @@ func (m *UserMutation) ClearedEdges() []string {
 	if m.clearedplatform_quotas {
 		edges = append(edges, user.EdgePlatformQuotas)
 	}
+	if m.cleareddaily_checkins {
+		edges = append(edges, user.EdgeDailyCheckins)
+	}
 	return edges
 }
 
@@ -55233,6 +55999,8 @@ func (m *UserMutation) EdgeCleared(name string) bool {
 		return m.clearedpending_auth_sessions
 	case user.EdgePlatformQuotas:
 		return m.clearedplatform_quotas
+	case user.EdgeDailyCheckins:
+		return m.cleareddaily_checkins
 	}
 	return false
 }
@@ -55287,6 +56055,9 @@ func (m *UserMutation) ResetEdge(name string) error {
 		return nil
 	case user.EdgePlatformQuotas:
 		m.ResetPlatformQuotas()
+		return nil
+	case user.EdgeDailyCheckins:
+		m.ResetDailyCheckins()
 		return nil
 	}
 	return fmt.Errorf("unknown User edge %s", name)

@@ -855,6 +855,42 @@ var (
 			},
 		},
 	}
+	// DailyCheckinsColumns holds the columns for the "daily_checkins" table.
+	DailyCheckinsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "reward_amount", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
+		{Name: "checkin_date", Type: field.TypeString, Size: 10},
+		{Name: "checkin_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "user_id", Type: field.TypeInt64},
+	}
+	// DailyCheckinsTable holds the schema information for the "daily_checkins" table.
+	DailyCheckinsTable = &schema.Table{
+		Name:       "daily_checkins",
+		Columns:    DailyCheckinsColumns,
+		PrimaryKey: []*schema.Column{DailyCheckinsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "daily_checkins_users_daily_checkins",
+				Columns:    []*schema.Column{DailyCheckinsColumns[6]},
+				RefColumns: []*schema.Column{UsersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "dailycheckin_user_id_checkin_date",
+				Unique:  true,
+				Columns: []*schema.Column{DailyCheckinsColumns[6], DailyCheckinsColumns[4]},
+			},
+			{
+				Name:    "dailycheckin_checkin_date",
+				Unique:  false,
+				Columns: []*schema.Column{DailyCheckinsColumns[4]},
+			},
+		},
+	}
 	// ErrorPassthroughRulesColumns holds the columns for the "error_passthrough_rules" table.
 	ErrorPassthroughRulesColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
@@ -2257,6 +2293,7 @@ var (
 		ChannelMonitorHistoriesTable,
 		ChannelMonitorRequestTemplatesTable,
 		CompositeModelRoutesTable,
+		DailyCheckinsTable,
 		ErrorPassthroughRulesTable,
 		GroupsTable,
 		IdempotencyRecordsTable,
@@ -2347,6 +2384,10 @@ func init() {
 	CompositeModelRoutesTable.ForeignKeys[0].RefTable = GroupsTable
 	CompositeModelRoutesTable.Annotation = &entsql.Annotation{
 		Table: "composite_model_routes",
+	}
+	DailyCheckinsTable.ForeignKeys[0].RefTable = UsersTable
+	DailyCheckinsTable.Annotation = &entsql.Annotation{
+		Table: "daily_checkins",
 	}
 	ErrorPassthroughRulesTable.Annotation = &entsql.Annotation{
 		Table: "error_passthrough_rules",

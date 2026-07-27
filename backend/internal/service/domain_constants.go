@@ -86,6 +86,7 @@ const (
 	RedeemTypeSubscription     = domain.RedeemTypeSubscription
 	RedeemTypeInvitation       = domain.RedeemTypeInvitation
 	RedeemTypeAffiliateBalance = "affiliate_balance"
+	RedeemTypeDailyCheckin     = "daily_checkin"
 )
 
 // PromoCode status constants
@@ -542,6 +543,12 @@ const (
 
 	// Web Search Emulation
 	SettingKeyWebSearchEmulationConfig = "web_search_emulation_config" // JSON 配置
+
+	// 每日签到设置
+	SettingKeyDailyCheckinEnabled    = "daily_checkin_enabled"     // 是否开启每日签到
+	SettingKeyDailyCheckinRewardMin = "daily_checkin_reward_min"  // 单次签到最小奖励
+	SettingKeyDailyCheckinRewardMax = "daily_checkin_reward_max"  // 单次签到最大奖励
+	SettingKeyDailyCheckinTimezone  = "daily_checkin_timezone"   // 签到业务时区（IANA）
 )
 
 // SettingKeyDefaultPlatformQuotas —— 系统全局：每用户 × 平台日/周/月 USD 上限（JSON）。
@@ -562,6 +569,14 @@ const (
 
 // AdminAPIKeyPrefix is the prefix for admin API keys (distinct from user "sk-" keys).
 const AdminAPIKeyPrefix = "admin-"
+
+// Daily checkin defaults
+const (
+	DailyCheckinDefaultEnabled    = false // 默认关闭
+	DailyCheckinDefaultRewardMin  = 0.0   // 默认最小奖励
+	DailyCheckinDefaultRewardMax  = 1.0   // 默认最大奖励
+	DailyCheckinDefaultTimezone   = "Asia/Shanghai" // 默认时区
+)
 
 // SettingKeyAllowUserViewErrorRequests controls whether end users can view
 // their own failed requests on the usage page. Default false (opt-in).

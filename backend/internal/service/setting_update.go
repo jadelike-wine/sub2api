@@ -434,6 +434,12 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	updates[SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
 
+	// 每日签到设置
+	updates[SettingKeyDailyCheckinEnabled] = strconv.FormatBool(settings.DailyCheckinEnabled)
+	updates[SettingKeyDailyCheckinRewardMin] = strconv.FormatFloat(settings.DailyCheckinRewardMin, 'f', -1, 64)
+	updates[SettingKeyDailyCheckinRewardMax] = strconv.FormatFloat(settings.DailyCheckinRewardMax, 'f', -1, 64)
+	updates[SettingKeyDailyCheckinTimezone] = settings.DailyCheckinTimezone
+
 	return updates, nil
 }
 

@@ -349,6 +349,11 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		AffiliateEnabled: settings.AffiliateEnabled,
 
 		AllowUserViewErrorRequests: settings.AllowUserViewErrorRequests,
+
+		DailyCheckinEnabled:   settings.DailyCheckinEnabled,
+		DailyCheckinRewardMin: settings.DailyCheckinRewardMin,
+		DailyCheckinRewardMax: settings.DailyCheckinRewardMax,
+		DailyCheckinTimezone:  settings.DailyCheckinTimezone,
 	}
 
 	// OpenAI fast policy (stored under a dedicated setting key)

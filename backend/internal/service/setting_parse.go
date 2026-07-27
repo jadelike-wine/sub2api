@@ -242,6 +242,12 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyOpenAIAdvancedSchedulerWeightSessionSticky:         "",
 
 		SettingKeyAllowUserViewErrorRequests: "false",
+
+		// 每日签到默认配置
+		SettingKeyDailyCheckinEnabled:    strconv.FormatBool(DailyCheckinDefaultEnabled),
+		SettingKeyDailyCheckinRewardMin:  strconv.FormatFloat(DailyCheckinDefaultRewardMin, 'f', -1, 64),
+		SettingKeyDailyCheckinRewardMax:  strconv.FormatFloat(DailyCheckinDefaultRewardMax, 'f', -1, 64),
+		SettingKeyDailyCheckinTimezone:   DailyCheckinDefaultTimezone,
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -892,6 +898,12 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 
 	result.AllowUserViewErrorRequests = settings[SettingKeyAllowUserViewErrorRequests] == "true" // default false
+
+	// 每日签到配置
+	result.DailyCheckinEnabled = settings[SettingKeyDailyCheckinEnabled] == "true"
+	result.DailyCheckinRewardMin = parseFloatDefault(settings[SettingKeyDailyCheckinRewardMin], DailyCheckinDefaultRewardMin)
+	result.DailyCheckinRewardMax = parseFloatDefault(settings[SettingKeyDailyCheckinRewardMax], DailyCheckinDefaultRewardMax)
+	result.DailyCheckinTimezone = firstNonEmpty(settings[SettingKeyDailyCheckinTimezone], DailyCheckinDefaultTimezone)
 
 	return result
 }

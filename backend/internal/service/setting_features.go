@@ -11,6 +11,9 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 // IsRegistrationEnabled 检查是否开放注册
@@ -1113,4 +1116,106 @@ func (s *SettingService) GetImageGenerationEnabled(ctx context.Context) (enabled
 // enabled 以 "true"/"false" 字符串落库。
 func (s *SettingService) SetImageGenerationEnabled(ctx context.Context, enabled bool) error {
 	return s.settingRepo.Set(ctx, SettingKeyImageGenerationEnabled, strconv.FormatBool(enabled))
+}
+
+// =========================
+// 每日签到 (Daily Check-in)
+// =========================
+
+// DailyCheckinSettings 每日签到运行时配置
+type DailyCheckinSettings struct {
+	Enabled   bool
+	MinReward float64
+	MaxReward float64
+	Timezone  string
+}
+
+// GetDailyCheckinSettings 读取每日签到配置。
+// 查询失败时回退到安全默认值（关闭）。
+func (s *SettingService) GetDailyCheckinSettings(ctx context.Context) (*DailyCheckinSettings, error) {
+	vals, err := s.settingRepo.GetMultiple(ctx, []string{
+		SettingKeyDailyCheckinEnabled,
+		SettingKeyDailyCheckinRewardMin,
+		SettingKeyDailyCheckinRewardMax,
+		SettingKeyDailyCheckinTimezone,
+	})
+	if err != nil {
+		return &DailyCheckinSettings{
+			Enabled:   DailyCheckinDefaultEnabled,
+			MinReward: DailyCheckinDefaultRewardMin,
+			MaxReward: DailyCheckinDefaultRewardMax,
+			Timezone:  DailyCheckinDefaultTimezone,
+		}, nil
+	}
+
+	settings := &DailyCheckinSettings{
+		Enabled:   vals[SettingKeyDailyCheckinEnabled] == "true",
+		MinReward: DailyCheckinDefaultRewardMin,
+		MaxReward: DailyCheckinDefaultRewardMax,
+		Timezone:  DailyCheckinDefaultTimezone,
+	}
+
+	if v, err := strconv.ParseFloat(strings.TrimSpace(vals[SettingKeyDailyCheckinRewardMin]), 64); err == nil && v >= 0 {
+		settings.MinReward = v
+	}
+	if v, err := strconv.ParseFloat(strings.TrimSpace(vals[SettingKeyDailyCheckinRewardMax]), 64); err == nil && v >= 0 {
+		settings.MaxReward = v
+	}
+	if tz := strings.TrimSpace(vals[SettingKeyDailyCheckinTimezone]); tz != "" {
+		if _, err := time.LoadLocation(tz); err == nil {
+			settings.Timezone = tz
+		}
+	}
+
+	return settings, nil
+}
+
+// IsDailyCheckinEnabled 检查是否开启每日签到功能
+func (s *SettingService) IsDailyCheckinEnabled(ctx context.Context) bool {
+	vals, err := s.settingRepo.GetMultiple(ctx, []string{SettingKeyDailyCheckinEnabled})
+	if err != nil {
+		return false
+	}
+	return vals[SettingKeyDailyCheckinEnabled] == "true"
+}
+
+// SetDailyCheckinSettings 保存每日签到配置并校验
+func (s *SettingService) SetDailyCheckinSettings(ctx context.Context, settings *DailyCheckinSettings) error {
+	if settings == nil {
+		return fmt.Errorf("daily checkin settings cannot be nil")
+	}
+
+	// 校验最小奖励不能小于 0
+	if settings.MinReward < 0 {
+		return infraerrors.BadRequest("DAILY_CHECKIN_INVALID_CONFIG", "minimum reward cannot be negative")
+	}
+	// 校验最大奖励不能小于 0
+	if settings.MaxReward < 0 {
+		return infraerrors.BadRequest("DAILY_CHECKIN_INVALID_CONFIG", "maximum reward cannot be negative")
+	}
+	// 校验最大值不能小于最小值
+	if settings.MaxReward < settings.MinReward {
+		return infraerrors.BadRequest("DAILY_CHECKIN_INVALID_CONFIG", "maximum reward cannot be less than minimum reward")
+	}
+	// 校验时区合法性
+	tz := strings.TrimSpace(settings.Timezone)
+	if tz == "" {
+		tz = DailyCheckinDefaultTimezone
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return infraerrors.BadRequest("DAILY_CHECKIN_INVALID_TIMEZONE", "invalid timezone: "+tz)
+	}
+
+	updates := map[string]string{
+		SettingKeyDailyCheckinEnabled:    strconv.FormatBool(settings.Enabled),
+		SettingKeyDailyCheckinRewardMin:  strconv.FormatFloat(settings.MinReward, 'f', -1, 64),
+		SettingKeyDailyCheckinRewardMax:  strconv.FormatFloat(settings.MaxReward, 'f', -1, 64),
+		SettingKeyDailyCheckinTimezone:   tz,
+	}
+
+	if err := s.settingRepo.SetMultiple(ctx, updates); err != nil {
+		return fmt.Errorf("update daily checkin settings: %w", err)
+	}
+
+	return nil
 }

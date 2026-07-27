@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorrequesttemplate"
 	"github.com/Wei-Shaw/sub2api/ent/compositemodelroute"
+	"github.com/Wei-Shaw/sub2api/ent/dailycheckin"
 	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
@@ -939,6 +940,33 @@ func init() {
 	compositemodelrouteDescEnabled := compositemodelrouteFields[7].Descriptor()
 	// compositemodelroute.DefaultEnabled holds the default value on creation for the enabled field.
 	compositemodelroute.DefaultEnabled = compositemodelrouteDescEnabled.Default.(bool)
+	dailycheckinMixin := schema.DailyCheckin{}.Mixin()
+	dailycheckinMixinFields0 := dailycheckinMixin[0].Fields()
+	_ = dailycheckinMixinFields0
+	dailycheckinFields := schema.DailyCheckin{}.Fields()
+	_ = dailycheckinFields
+	// dailycheckinDescCreatedAt is the schema descriptor for created_at field.
+	dailycheckinDescCreatedAt := dailycheckinMixinFields0[0].Descriptor()
+	// dailycheckin.DefaultCreatedAt holds the default value on creation for the created_at field.
+	dailycheckin.DefaultCreatedAt = dailycheckinDescCreatedAt.Default.(func() time.Time)
+	// dailycheckinDescUpdatedAt is the schema descriptor for updated_at field.
+	dailycheckinDescUpdatedAt := dailycheckinMixinFields0[1].Descriptor()
+	// dailycheckin.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	dailycheckin.DefaultUpdatedAt = dailycheckinDescUpdatedAt.Default.(func() time.Time)
+	// dailycheckin.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	dailycheckin.UpdateDefaultUpdatedAt = dailycheckinDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// dailycheckinDescRewardAmount is the schema descriptor for reward_amount field.
+	dailycheckinDescRewardAmount := dailycheckinFields[1].Descriptor()
+	// dailycheckin.DefaultRewardAmount holds the default value on creation for the reward_amount field.
+	dailycheckin.DefaultRewardAmount = dailycheckinDescRewardAmount.Default.(float64)
+	// dailycheckinDescCheckinDate is the schema descriptor for checkin_date field.
+	dailycheckinDescCheckinDate := dailycheckinFields[2].Descriptor()
+	// dailycheckin.CheckinDateValidator is a validator for the "checkin_date" field. It is called by the builders before save.
+	dailycheckin.CheckinDateValidator = dailycheckinDescCheckinDate.Validators[0].(func(string) error)
+	// dailycheckinDescCheckinAt is the schema descriptor for checkin_at field.
+	dailycheckinDescCheckinAt := dailycheckinFields[3].Descriptor()
+	// dailycheckin.DefaultCheckinAt holds the default value on creation for the checkin_at field.
+	dailycheckin.DefaultCheckinAt = dailycheckinDescCheckinAt.Default.(func() time.Time)
 	errorpassthroughruleMixin := schema.ErrorPassthroughRule{}.Mixin()
 	errorpassthroughruleMixinFields0 := errorpassthroughruleMixin[0].Fields()
 	_ = errorpassthroughruleMixinFields0

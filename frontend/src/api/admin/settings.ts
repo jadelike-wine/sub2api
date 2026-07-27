@@ -663,6 +663,12 @@ export interface SystemSettings {
 
   // Allow user view error requests
   allow_user_view_error_requests: boolean;
+
+  // Daily check-in feature
+  daily_checkin_enabled: boolean;
+  daily_checkin_reward_min: number;
+  daily_checkin_reward_max: number;
+  daily_checkin_timezone: string;
 }
 
 export interface UpdateSettingsRequest {
@@ -932,6 +938,12 @@ export interface UpdateSettingsRequest {
   openai_fast_policy_settings?: OpenAIFastPolicySettings;
 
   allow_user_view_error_requests?: boolean;
+
+  // Daily check-in feature
+  daily_checkin_enabled?: boolean;
+  daily_checkin_reward_min?: number;
+  daily_checkin_reward_max?: number;
+  daily_checkin_timezone?: string;
 }
 
 /**

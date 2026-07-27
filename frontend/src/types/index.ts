@@ -241,6 +241,7 @@ export interface PublicSettings {
   service_quota_enabled: boolean
   affiliate_enabled: boolean
   allow_user_view_error_requests?: boolean
+  daily_checkin_enabled: boolean
 }
 
 export interface AuthResponse {

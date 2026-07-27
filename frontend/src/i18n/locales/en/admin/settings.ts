@@ -98,6 +98,18 @@ export default {
           },
         },
       },
+      dailyCheckin: {
+        title: 'Daily Check-in',
+        description: 'Users can check in daily to receive random balance rewards, boosting engagement. Disabled by default.',
+        enabled: 'Enable Daily Check-in',
+        enabledHint: 'When disabled, the check-in card is hidden and the API is unavailable.',
+        rewardMin: 'Minimum Reward',
+        rewardMinHint: 'Minimum random reward per check-in (USD).',
+        rewardMax: 'Maximum Reward',
+        rewardMaxHint: 'Maximum random reward per check-in (USD), cannot be less than minimum.',
+        timezone: 'Business Timezone',
+        timezoneHint: 'Check-in date is calculated using this timezone (IANA identifier, e.g. Asia/Shanghai).',
+      },
       emailTabDisabledTitle: 'Email Verification Not Enabled',
       emailTabDisabledHint: 'Enable email verification in the Security tab to configure SMTP settings.',
       registration: {
