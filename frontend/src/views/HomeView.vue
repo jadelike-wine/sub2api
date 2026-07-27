@@ -204,6 +204,82 @@
           </div>
         </div>
 
+        <!-- Product Capabilities -->
+        <div class="mb-16">
+          <div class="mb-8 text-center">
+            <h2 class="mb-2 text-2xl font-bold text-gray-900 dark:text-white">
+              {{ t('home.productCapabilities.title') }}
+            </h2>
+            <p class="text-sm text-gray-600 dark:text-dark-400">
+              {{ t('home.productCapabilities.subtitle') }}
+            </p>
+          </div>
+
+          <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+            <div
+              v-for="cap in productCapabilities"
+              :key="cap.key"
+              class="group relative flex flex-col rounded-2xl border bg-white/60 p-6 backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-primary-500/10 dark:bg-dark-800/60"
+              :class="cap.live
+                ? 'border-gray-200/50 dark:border-dark-700/50'
+                : 'border-dashed border-amber-300/70 dark:border-amber-500/40'"
+            >
+              <!-- Status Badge -->
+              <div class="mb-4">
+                <span
+                  class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium"
+                  :class="cap.live
+                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                    : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'"
+                >
+                  <span
+                    class="h-1.5 w-1.5 rounded-full"
+                    :class="cap.live ? 'bg-emerald-500' : 'bg-amber-500'"
+                  ></span>
+                  {{ cap.live ? t('home.productCapabilities.statusLive') : t('home.productCapabilities.statusPlanned') }}
+                </span>
+              </div>
+
+              <!-- Icon -->
+              <div
+                class="mb-4 flex h-12 w-12 items-center justify-center rounded-xl shadow-lg transition-transform group-hover:scale-110"
+                :class="cap.iconBg"
+              >
+                <Icon :name="cap.icon" size="lg" class="text-white" />
+              </div>
+
+              <!-- Title -->
+              <h3 class="mb-2 text-base font-semibold text-gray-900 dark:text-white">
+                {{ cap.title }}
+              </h3>
+
+              <!-- Description -->
+              <p class="mb-5 flex-1 text-sm leading-relaxed text-gray-600 dark:text-dark-400">
+                {{ cap.description }}
+              </p>
+
+              <!-- Action -->
+              <div>
+                <router-link
+                  v-if="cap.live && cap.to"
+                  :to="cap.to"
+                  class="btn btn-primary w-full px-4 py-2 text-sm"
+                >
+                  {{ t('home.productCapabilities.actionLive') }}
+                  <Icon name="arrowRight" size="sm" :stroke-width="2" />
+                </router-link>
+                <button
+                  v-else
+                  disabled
+                  class="btn w-full cursor-not-allowed border border-dashed border-gray-300 bg-gray-100 px-4 py-2 text-sm text-gray-500 opacity-80 dark:border-dark-600 dark:bg-dark-800/50 dark:text-dark-400"
+                >
+                  {{ t('home.productCapabilities.actionPlanned') }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Features Grid -->
         <div class="mb-12 grid gap-6 md:grid-cols-3">
           <!-- Feature 1: Unified Gateway -->
@@ -437,6 +513,46 @@ const userInitial = computed(() => {
 
 // Current year for footer
 const currentYear = computed(() => new Date().getFullYear())
+
+// Product Capabilities card data
+const productCapabilities = computed(() => [
+  {
+    key: 'apiRelay',
+    live: true,
+    icon: 'swap' as const,
+    iconBg: 'bg-gradient-to-br from-blue-500 to-blue-600 shadow-blue-500/30',
+    title: t('home.productCapabilities.items.apiRelay.title'),
+    description: t('home.productCapabilities.items.apiRelay.description'),
+    to: dashboardPath.value,
+  },
+  {
+    key: 'imageGen',
+    live: true,
+    icon: 'sparkles' as const,
+    iconBg: 'bg-gradient-to-br from-primary-500 to-primary-600 shadow-primary-500/30',
+    title: t('home.productCapabilities.items.imageGen.title'),
+    description: t('home.productCapabilities.items.imageGen.description'),
+    to: '/ai-image',
+  },
+  {
+    key: 'videoGen',
+    live: false,
+    icon: 'play' as const,
+    iconBg: 'bg-gradient-to-br from-purple-500 to-purple-600 shadow-purple-500/30',
+    title: t('home.productCapabilities.items.videoGen.title'),
+    description: t('home.productCapabilities.items.videoGen.description'),
+    to: null,
+  },
+  {
+    key: 'quantTrading',
+    live: false,
+    icon: 'chartBar' as const,
+    iconBg: 'bg-gradient-to-br from-amber-500 to-amber-600 shadow-amber-500/30',
+    title: t('home.productCapabilities.items.quantTrading.title'),
+    description: t('home.productCapabilities.items.quantTrading.description'),
+    to: null,
+  },
+])
 
 // Toggle theme
 function toggleTheme() {

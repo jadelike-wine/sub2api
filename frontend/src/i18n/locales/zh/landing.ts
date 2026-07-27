@@ -93,6 +93,33 @@ export default {
         }
       }
     },
+    // 产品能力区块
+    productCapabilities: {
+      title: '产品能力',
+      subtitle: '从 AI 接口中转到图片生成，一站式满足你的 AI 需求',
+      items: {
+        apiRelay: {
+          title: '大模型 API 中转',
+          description: '提供统一、稳定的 OpenAI 兼容接口，灵活连接多种大模型服务。',
+        },
+        imageGen: {
+          title: 'AI 图片生成',
+          description: '通过简单的文字或图片输入，快速生成高质量 AI 图片。',
+        },
+        videoGen: {
+          title: 'AI 视频生成',
+          description: '将文字和图片转化为动态视频内容，相关能力正在建设中。',
+        },
+        quantTrading: {
+          title: 'A 股量化交易',
+          description: '面向中国 A 股市场的数据分析、策略研究与量化工具，相关能力正在规划中。',
+        },
+      },
+      statusLive: '已上线',
+      statusPlanned: '规划中',
+      actionLive: '立即使用',
+      actionPlanned: '敬请期待',
+    },
     providers: {
       title: '已支持的 AI 模型',
       description: '一个 API，多种选择',
