@@ -1058,6 +1058,7 @@ func TestAnthropicToCC_ThinkingBlockStrippedAtCBoundary(t *testing.T) {
 	)
 
 	// 构造一个包含 thinking + text 的 Anthropic 响应
+	stopReasonVal := stopReason
 	anthropicResp := &apicompat.AnthropicResponse{
 		ID:    "msg_test_1",
 		Type:  "message",
@@ -1073,7 +1074,7 @@ func TestAnthropicToCC_ThinkingBlockStrippedAtCBoundary(t *testing.T) {
 				Text: contentText,
 			},
 		},
-		StopReason: stopReason,
+		StopReason: &stopReasonVal,
 		Usage: apicompat.AnthropicUsage{
 			InputTokens:  inputTokens,
 			OutputTokens: outputTokens,

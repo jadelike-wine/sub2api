@@ -290,7 +290,7 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 	// sanitizeBedrockFieldsForBetaTokens 对称。
 	if !gjson.GetBytes(out, "context_management").Exists() {
 		thinkingType := gjson.GetBytes(out, "thinking.type").String()
-		if thinkingType == "enabled" || thinkingType == "adaptive" {
+		if thinkingType == "enabled" || thinkingType == "adaptive" || thinkingType == "auto" {
 			const cmDefault = `{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]}`
 			if next, ok := setJSONRawBytes(out, "context_management", []byte(cmDefault)); ok {
 				out = next

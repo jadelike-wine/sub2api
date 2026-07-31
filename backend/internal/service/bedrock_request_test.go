@@ -765,31 +765,31 @@ func TestIsBedrockOpus47OrNewer(t *testing.T) {
 }
 
 func TestSanitizeBedrockThinking(t *testing.T) {
-	t.Run("Fable 5 将 enabled 转换为 adaptive 并移除预算", func(t *testing.T) {
+	t.Run("Fable 5 将 enabled 转换为 auto 并移除预算", func(t *testing.T) {
 		input := `{"thinking":{"type":"enabled","budget_tokens":10000},"messages":[]}`
 		result := sanitizeBedrockThinking([]byte(input), "anthropic.claude-fable-5")
-		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
+		assert.Equal(t, "auto", gjson.GetBytes(result, "thinking.type").String())
 		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
 	})
 
-	t.Run("Fable 5 adaptive 移除预算", func(t *testing.T) {
+	t.Run("Fable 5 adaptive 转换为 auto 移除预算", func(t *testing.T) {
 		input := `{"thinking":{"type":"adaptive","budget_tokens":10000},"messages":[]}`
 		result := sanitizeBedrockThinking([]byte(input), "claude-fable-5")
-		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
+		assert.Equal(t, "auto", gjson.GetBytes(result, "thinking.type").String())
 		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
 	})
 
-	t.Run("opus 4.7 converts enabled to adaptive", func(t *testing.T) {
+	t.Run("opus 4.7 converts enabled to auto", func(t *testing.T) {
 		input := `{"thinking":{"type":"enabled","budget_tokens":10000},"messages":[]}`
 		result := sanitizeBedrockThinking([]byte(input), "us.anthropic.claude-opus-4-7-v1")
-		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
+		assert.Equal(t, "auto", gjson.GetBytes(result, "thinking.type").String())
 		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
 	})
 
-	t.Run("opus 4.7 keeps adaptive unchanged", func(t *testing.T) {
+	t.Run("opus 4.7 converts adaptive to auto", func(t *testing.T) {
 		input := `{"thinking":{"type":"adaptive"},"messages":[]}`
 		result := sanitizeBedrockThinking([]byte(input), "us.anthropic.claude-opus-4-7-v1")
-		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
+		assert.Equal(t, "auto", gjson.GetBytes(result, "thinking.type").String())
 	})
 
 	t.Run("opus 4.6 enabled without budget_tokens gets default", func(t *testing.T) {
@@ -817,6 +817,19 @@ func TestSanitizeBedrockThinking(t *testing.T) {
 		result := sanitizeBedrockThinking([]byte(input), "us.anthropic.claude-sonnet-4-6")
 		assert.Equal(t, "enabled", gjson.GetBytes(result, "thinking.type").String())
 		assert.Equal(t, int64(defaultThinkingBudgetTokens), gjson.GetBytes(result, "thinking.budget_tokens").Int())
+	})
+
+	t.Run("disabled unchanged on opus 4.7", func(t *testing.T) {
+		input := `{"thinking":{"type":"disabled"},"messages":[]}`
+		result := sanitizeBedrockThinking([]byte(input), "us.anthropic.claude-opus-4-7-v1")
+		assert.Equal(t, "disabled", gjson.GetBytes(result, "thinking.type").String())
+	})
+
+	t.Run("auto unchanged on opus 4.7", func(t *testing.T) {
+		input := `{"thinking":{"type":"auto"},"messages":[]}`
+		result := sanitizeBedrockThinking([]byte(input), "us.anthropic.claude-opus-4-7-v1")
+		assert.Equal(t, "auto", gjson.GetBytes(result, "thinking.type").String())
+		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
 	})
 }
 
@@ -878,10 +891,10 @@ func TestSanitizeBedrockToolUseIDs(t *testing.T) {
 }
 
 func TestSanitizeBedrockThinking_EdgeCases(t *testing.T) {
-	t.Run("opus 4.7 enabled without budget_tokens converts to adaptive", func(t *testing.T) {
+	t.Run("opus 4.7 enabled without budget_tokens converts to auto", func(t *testing.T) {
 		input := `{"thinking":{"type":"enabled"},"messages":[]}`
 		result := sanitizeBedrockThinking([]byte(input), "us.anthropic.claude-opus-4-7-v1")
-		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
+		assert.Equal(t, "auto", gjson.GetBytes(result, "thinking.type").String())
 		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
 	})
 
@@ -903,18 +916,18 @@ func TestSanitizeBedrockThinking_EdgeCases(t *testing.T) {
 		assert.JSONEq(t, input, string(result))
 	})
 
-	t.Run("opus 4.7 adaptive with budget_tokens preserved", func(t *testing.T) {
+	t.Run("opus 4.7 adaptive with budget_tokens converted to auto", func(t *testing.T) {
 		input := `{"thinking":{"type":"adaptive","budget_tokens":5000},"messages":[]}`
 		result := sanitizeBedrockThinking([]byte(input), "us.anthropic.claude-opus-4-7-v1")
-		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
-		assert.Equal(t, int64(5000), gjson.GetBytes(result, "thinking.budget_tokens").Int())
+		assert.Equal(t, "auto", gjson.GetBytes(result, "thinking.type").String())
+		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
 	})
 
 	// Forward() passes parsed.Model (standard names like "claude-opus-4-7")
-	t.Run("standard model name opus 4.7 converts enabled to adaptive", func(t *testing.T) {
+	t.Run("standard model name opus 4.7 converts enabled to auto", func(t *testing.T) {
 		input := `{"thinking":{"type":"enabled","budget_tokens":10000},"messages":[]}`
 		result := sanitizeBedrockThinking([]byte(input), "claude-opus-4-7")
-		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
+		assert.Equal(t, "auto", gjson.GetBytes(result, "thinking.type").String())
 		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
 	})
 
@@ -977,10 +990,10 @@ func TestPrepareBedrockRequestBodyWithTokens_CCCompat(t *testing.T) {
 		assert.Equal(t, "toolu_01_Ab", gjson.GetBytes(result, "messages.1.content.0.tool_use_id").String())
 	})
 
-	t.Run("ccCompat=true converts thinking to adaptive for opus 4.7", func(t *testing.T) {
+	t.Run("ccCompat=true converts thinking to auto for opus 4.7", func(t *testing.T) {
 		result, err := PrepareBedrockRequestBodyWithTokens([]byte(input), "us.anthropic.claude-opus-4-7-v1", nil, true)
 		require.NoError(t, err)
-		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
+		assert.Equal(t, "auto", gjson.GetBytes(result, "thinking.type").String())
 		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
 		assert.Equal(t, "toolu_01_Ab", gjson.GetBytes(result, "messages.0.content.0.id").String())
 	})

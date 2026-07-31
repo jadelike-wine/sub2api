@@ -245,6 +245,16 @@ func (s *GatewayService) debugClaudeMimicEnabled() bool {
 	return s.debugClaudeMimic.Load()
 }
 
+// debugThinkingEnabled 报告 GATEWAY_THINKING_DEBUG 是否开启。
+// 关闭时所有 thinking 诊断日志（gateway.thinking_incoming / model_mapping / outgoing）
+// 都不应被调用，确保零额外开销。
+func (s *GatewayService) debugThinkingEnabled() bool {
+	if s == nil {
+		return false
+	}
+	return s.debugThinking.Load()
+}
+
 func parseDebugEnvBool(raw string) bool {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "yes", "on":
@@ -706,6 +716,7 @@ type GatewayService struct {
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	debugModelRouting     atomic.Bool
 	debugClaudeMimic      atomic.Bool
+	debugThinking         atomic.Bool // 受 GATEWAY_THINKING_DEBUG 控制；关闭时不产生任何 thinking 诊断日志
 	channelService        *ChannelService
 	resolver              *ModelPricingResolver
 	compositeResolver     *CompositeRouteResolver
@@ -792,6 +803,7 @@ func NewGatewayService(
 	)
 	svc.debugModelRouting.Store(parseDebugEnvBool(os.Getenv("SUB2API_DEBUG_MODEL_ROUTING")))
 	svc.debugClaudeMimic.Store(parseDebugEnvBool(os.Getenv("SUB2API_DEBUG_CLAUDE_MIMIC")))
+	svc.debugThinking.Store(parseDebugEnvBool(os.Getenv(gatewayThinkingDebugEnv)))
 	if path := strings.TrimSpace(os.Getenv(debugGatewayBodyEnv)); path != "" {
 		svc.initDebugGatewayBodyFile(path)
 	}

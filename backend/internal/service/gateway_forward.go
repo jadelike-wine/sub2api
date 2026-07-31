@@ -93,6 +93,31 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return nil, fmt.Errorf("parse request: empty request")
 	}
 
+	// 诊断日志 1/3：请求完成初始解析后（ParseGatewayRequest 已执行，含 NormalizeAnthropicThinking）。
+	// 默认关闭，仅 GATEWAY_THINKING_DEBUG=true 时输出。不修改任何 thinking 转换逻辑。
+	if s.debugThinkingEnabled() {
+		incomingType, hasBudget, budget := extractThinkingInfoFromBody(parsed.Body.Bytes())
+		reqID, clientReqID := getRequestIDsFromContext(ctx)
+		publicModel := parsed.Model
+		logThinkingDebug(ctx, thinkingDebugFields{
+			event:           "gateway.thinking_incoming",
+			requestID:       reqID,
+			clientRequestID: clientReqID,
+			publicModel:     publicModel,
+			mappedModel:     publicModel, // 映射前 mapped == public
+			accountID:       accountIDOrZero(account),
+			accountName:     accountNameOrEmpty(account),
+			accountPlatform: accountPlatformOrEmpty(account),
+			provider:        accountTypeOrEmpty(account),
+			stream:          parsed.Stream,
+			thinkingType:    incomingType,
+			hasBudgetTokens: hasBudget,
+			budgetTokens:    budget,
+		})
+		// 缓存入口 thinking.type，供 outgoing 阶段判断是否被转换。
+		rememberIncomingThinkingState(c, incomingType, publicModel)
+	}
+
 	// Web Search 模拟：纯 web_search 请求时，直接调用搜索 API 构造响应
 	if account != nil && s.shouldEmulateWebSearch(ctx, account, parsed.GroupID, parsed.Body.Bytes()) {
 		return s.handleWebSearchEmulation(ctx, c, account, parsed)
@@ -287,6 +312,29 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		logger.LegacyPrintf("service.gateway", "Model mapping applied: %s -> %s (account: %s, source=%s)", originalModel, mappedModel, account.Name, mappingSource)
 	}
 
+	// 诊断日志 2/3：账号和模型映射完成后。
+	// 记录 public_model → mapped_model 的映射结果及当前 thinking 状态。
+	// 此时 thinking 转换尚未执行（FilterThinkingBlocks / NormalizeChineseLLMThinking 等在后续 pre-filter 阶段）。
+	if s.debugThinkingEnabled() {
+		curType, hasBudget, budget := extractThinkingInfoFromBody(body)
+		reqID, clientReqID := getRequestIDsFromContext(ctx)
+		logThinkingDebug(ctx, thinkingDebugFields{
+			event:           "gateway.model_mapping",
+			requestID:       reqID,
+			clientRequestID: clientReqID,
+			publicModel:     originalModel,
+			mappedModel:     mappedModel,
+			accountID:       accountIDOrZero(account),
+			accountName:     accountNameOrEmpty(account),
+			accountPlatform: accountPlatformOrEmpty(account),
+			provider:        accountTypeOrEmpty(account),
+			stream:          reqStream,
+			thinkingType:    curType,
+			hasBudgetTokens: hasBudget,
+			budgetTokens:    budget,
+		})
+	}
+
 	if s.shouldInjectAnthropicCacheTTL1h(ctx, account) {
 		if err := replaceBody(injectAnthropicCacheControlTTL1h(body)); err != nil {
 			return nil, err
@@ -345,6 +393,22 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				return nil, err
 			}
 			logger.LegacyPrintf("service.gateway", "Account %d: rewrote thinking.type for %s (Anthropic-SDK default 'enabled' -> vendor-specific)", account.ID, reqModel)
+		}
+	}
+
+	// DeepSeek V4 thinking 适配：adaptive → auto，并处理 output_config.effort → reasoning_effort。
+	// 仅对 DeepSeek V4 系列模型生效，避免影响 MiniMax / Anthropic-strict / Bedrock 路径。
+	// 流式 / 非流式 / 工具调用续轮 / fallback 共用此转换（每次进入 Forward 都会执行）。
+	if isDeepSeekV4Model(reqModel) {
+		rewritten, err := NormalizeDeepSeekV4Thinking(body)
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(rewritten, body) {
+			if err := replaceBody(rewritten); err != nil {
+				return nil, err
+			}
+			logger.LegacyPrintf("service.gateway", "Account %d: rewrote thinking for DeepSeek V4 (%s)", account.ID, reqModel)
 		}
 	}
 

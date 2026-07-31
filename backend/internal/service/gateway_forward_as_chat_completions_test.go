@@ -101,7 +101,7 @@ func TestHandleCCBufferedFromAnthropic_CompactSSEFormat(t *testing.T) {
 	}
 
 	svc := &GatewayService{}
-	result, err := svc.handleCCBufferedFromAnthropic(resp, c, "k3", "k3", nil, time.Now())
+	result, err := svc.handleCCBufferedFromAnthropic(resp, c, "k3", "k3", "k3", nil, time.Now())
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 15, result.Usage.InputTokens)
@@ -137,7 +137,7 @@ func TestHandleCCStreamingFromAnthropic_CompactSSEFormat(t *testing.T) {
 	}
 
 	svc := &GatewayService{}
-	result, err := svc.handleCCStreamingFromAnthropic(resp, c, "k3", "k3", nil, time.Now(), true)
+	result, err := svc.handleCCStreamingFromAnthropic(resp, c, "k3", "k3", "k3", nil, time.Now(), true)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 21, result.Usage.InputTokens)

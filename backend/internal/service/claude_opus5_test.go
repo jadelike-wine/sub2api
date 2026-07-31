@@ -119,14 +119,15 @@ func TestClaudeOpus5_BedrockCapabilityGates(t *testing.T) {
 	}
 }
 
-// TestClaudeOpus5_BedrockThinkingConvertedToAdaptive 验证 Opus 5 在 Bedrock 路径上
-// 会把 thinking.type=enabled 转成 adaptive 并移除 budget_tokens。
-// 上游 Opus 5 已移除 budget_tokens，透传过去会直接 400。
-func TestClaudeOpus5_BedrockThinkingConvertedToAdaptive(t *testing.T) {
+// TestClaudeOpus5_BedrockThinkingConvertedToAuto 验证 Opus 5 在 Bedrock 路径上
+// 会把 thinking.type=enabled 转成 auto 并移除 budget_tokens。
+// "adaptive" 不是 Anthropic 官方协议值，透传给 Bedrock 会触发 400
+// `'type' must be in ["enabled", "disabled", "auto"]`。
+func TestClaudeOpus5_BedrockThinkingConvertedToAuto(t *testing.T) {
 	body := []byte(`{"thinking":{"type":"enabled","budget_tokens":10000}}`)
 	got := sanitizeBedrockThinking(body, "us.anthropic.claude-opus-5-v1")
 
-	assert.JSONEq(t, `{"thinking":{"type":"adaptive"}}`, string(got))
+	assert.JSONEq(t, `{"thinking":{"type":"auto"}}`, string(got))
 }
 
 // TestClaudeOpus5_CatalogAndBedrockMapping 锁定模型清单与 Bedrock 默认映射。

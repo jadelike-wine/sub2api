@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -92,6 +93,22 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 	if normalizedBody, normalized := NormalizeGLMOpenAIReasoningEffort(upstreamBody, upstreamModel); normalized {
 		upstreamBody = normalizedBody
+	}
+
+	// DeepSeek V4 thinking 适配（OpenAI CC 直转路径）：
+	// 客户端可能混合发送 Anthropic 风格的 thinking.type=adaptive 或 output_config.effort，
+	// DeepSeek V4 上游仅接受 thinking.type = enabled|disabled|auto，且使用顶层
+	// reasoning_effort 而非 output_config.effort。此处复用 Anthropic 路径同一适配器，
+	// 确保流式/非流式行为一致。
+	if isDeepSeekV4Model(upstreamModel) {
+		rewritten, err := NormalizeDeepSeekV4Thinking(upstreamBody)
+		if err != nil {
+			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return nil, err
+		}
+		if !bytes.Equal(rewritten, upstreamBody) {
+			upstreamBody = rewritten
+		}
 	}
 
 	// 3b. 动态注入内部身份提示词（隐藏真实上游模型）。

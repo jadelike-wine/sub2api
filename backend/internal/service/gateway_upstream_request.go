@@ -207,6 +207,13 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		logClaudeMimicDebug(req, body, account, tokenType, mimicClaudeCode)
 	}
 
+	// 诊断日志 3/3：所有协议转换完成、最终发送上游之前。
+	// 此处 body 已经过 sanitizeAnthropicBodyForBetaTokens 等所有改写，
+	// 是真正发往上游的最终请求体。upstream_host 仅取 hostname。
+	if s.debugThinkingEnabled() {
+		s.logThinkingOutgoing(ctx, c, account, body, req.URL.String(), modelID, reqStream)
+	}
+
 	return req, body, nil
 }
 
@@ -332,6 +339,12 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 		"stream":     strconv.FormatBool(reqStream),
 	})
 
+	// 诊断日志 3/3（Vertex 路径）：所有协议转换完成、最终发送上游之前。
+	// vertexBody 是 Vertex 路径的最终请求体。
+	if s.debugThinkingEnabled() {
+		s.logThinkingOutgoing(ctx, c, account, vertexBody, req.URL.String(), modelID, reqStream)
+	}
+
 	return req, nil
 }
 
@@ -388,7 +401,9 @@ func requestNeedsBetaFeatures(body []byte) bool {
 		return true
 	}
 	thinkingType := gjson.GetBytes(body, "thinking.type").String()
-	if strings.EqualFold(thinkingType, "enabled") || strings.EqualFold(thinkingType, "adaptive") {
+	if strings.EqualFold(thinkingType, "enabled") ||
+		strings.EqualFold(thinkingType, "adaptive") ||
+		strings.EqualFold(thinkingType, "auto") {
 		return true
 	}
 	return false

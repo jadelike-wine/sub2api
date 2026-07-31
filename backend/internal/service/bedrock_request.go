@@ -183,7 +183,7 @@ func BuildBedrockURL(region, modelID string, stream bool) string {
 //  3. 移除 Bedrock 不支持的字段（model, stream, output_format, output_config）
 //  4. 移除工具定义中的 custom 字段（Claude Code 会发送 custom: {defer_loading: true}）
 //  5. 清理 cache_control 中 Bedrock 不支持的字段（scope, ttl）
-//  6. 修复 thinking 字段兼容性（Opus 4.7 仅支持 adaptive，enabled 需要 budget_tokens）
+//  6. 修复 thinking 字段兼容性（Opus 4.7+/Fable 5 使用 auto，enabled 需要 budget_tokens）
 //  7. 清理 tool_use.id / tool_use_id 中 Bedrock 不接受的字符
 //  8. 根据最终 Bedrock beta tokens 剥离不再支持的 beta 字段
 func PrepareBedrockRequestBody(body []byte, modelID string, betaHeader string) ([]byte, error) {
@@ -679,10 +679,21 @@ func isBedrockFable5(modelID string) bool {
 
 const defaultThinkingBudgetTokens = 10000
 
+// bedrockAutoThinkingType 是 Bedrock Anthropic-strict 上游接受的「无需 budget_tokens
+// 的自动思考」type 值。Anthropic 官方协议仅接受 enabled/disabled/auto；
+// "adaptive" 不是官方值，透传给 Bedrock 会触发 400
+// `'type' must be in ["enabled", "disabled", "auto"]`。
+const bedrockAutoThinkingType = "auto"
+
 // sanitizeBedrockThinking 修复 thinking 字段的 Bedrock 兼容性问题：
-//   - Fable 5: 仅使用 always-on adaptive thinking，不支持手动 budget_tokens
-//   - Opus 4.7+: 仅支持 "adaptive"，将 "enabled" 转换为 "adaptive" 并移除 budget_tokens
-//   - 其他模型: "enabled" 必须带 budget_tokens，缺失时补充默认值
+//   - Fable 5: 仅使用 always-on 自动思考，不支持手动 budget_tokens。
+//     将 enabled / adaptive 统一改为 auto，并移除 budget_tokens。
+//   - Opus 4.7+: 不支持 enabled + budget_tokens；将 enabled / adaptive 统一改为
+//     auto（无 budget_tokens）。auto 是 Anthropic 官方协议合法值。
+//   - 其他模型: enabled 必须带 budget_tokens，缺失时补充默认值。
+//
+// 注意：历史版本曾把 enabled 改为 "adaptive"，但 adaptive 不是 Anthropic 官方
+// 协议值，Bedrock 上游会以 400 拒绝。这里统一改为 "auto"。
 func sanitizeBedrockThinking(body []byte, modelID string) []byte {
 	thinking := gjson.GetBytes(body, "thinking")
 	if !thinking.Exists() || !thinking.IsObject() {
@@ -695,18 +706,16 @@ func sanitizeBedrockThinking(body []byte, modelID string) []byte {
 	}
 
 	if isBedrockFable5(modelID) {
-		if thinkingType == "enabled" {
-			body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
-		}
 		if thinkingType == "enabled" || thinkingType == "adaptive" {
+			body, _ = sjson.SetBytes(body, "thinking.type", bedrockAutoThinkingType)
 			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
 		}
 		return body
 	}
 
 	if isBedrockOpus47OrNewer(modelID) {
-		if thinkingType == "enabled" {
-			body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
+		if thinkingType == "enabled" || thinkingType == "adaptive" {
+			body, _ = sjson.SetBytes(body, "thinking.type", bedrockAutoThinkingType)
 			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
 		}
 		return body

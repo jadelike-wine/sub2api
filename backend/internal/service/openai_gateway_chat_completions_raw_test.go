@@ -686,6 +686,137 @@ func TestIsOpenAIChatUsageOnlyStreamChunk(t *testing.T) {
 	require.False(t, isOpenAIChatUsageOnlyStreamChunk(``))
 }
 
+// TestForwardAsRawChatCompletions_DeepSeekV4AdaptiveThinkingConvertedToAuto 验证
+// OpenAI CC 直转路径在 DeepSeek V4 模型下将 thinking.type=adaptive 转换为 auto，
+// 避免上游 400 "'type' must be in ["enabled", "disabled", "auto"]"。
+func TestForwardAsRawChatCompletions_DeepSeekV4AdaptiveThinkingConvertedToAuto(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"adaptive","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_ds_v4_adaptive"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_ds_v4","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := rawChatCompletionsTestAccount()
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// 上游收到的 thinking.type 应为 auto，且不应包含 budget_tokens。
+	require.Equal(t, "auto", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
+		"adaptive 应被转换为 auto")
+	require.False(t, gjson.GetBytes(upstream.lastBody, "thinking.budget_tokens").Exists(),
+		"adaptive→auto 后不应携带 budget_tokens")
+}
+
+// TestForwardAsRawChatCompletions_DeepSeekV4OutputConfigEffortConvertedToReasoningEffort
+// 验证 OpenAI CC 直转路径在 DeepSeek V4 模型下将 output_config.effort 转换为顶层 reasoning_effort。
+func TestForwardAsRawChatCompletions_DeepSeekV4OutputConfigEffortConvertedToReasoningEffort(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"deepseek-v4-pro","output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_ds_v4_effort"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_ds_v4_effort","object":"chat.completion","model":"deepseek-v4-pro","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := rawChatCompletionsTestAccount()
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Equal(t, "high", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String(),
+		"output_config.effort 应被转换为顶层 reasoning_effort")
+	require.False(t, gjson.GetBytes(upstream.lastBody, "output_config").Exists(),
+		"转换后应删除 output_config 字段")
+}
+
+// TestForwardAsRawChatCompletions_DeepSeekV4NoThinkingFieldStaysAbsent 验证
+// OpenAI CC 直转路径在 DeepSeek V4 模型下未传 thinking 时不生成空字段。
+func TestForwardAsRawChatCompletions_DeepSeekV4NoThinkingFieldStaysAbsent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_ds_v4_no_thinking"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_ds_v4_no_thinking","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := rawChatCompletionsTestAccount()
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.False(t, gjson.GetBytes(upstream.lastBody, "thinking").Exists(),
+		"未传 thinking 时不应自动生成字段")
+}
+
+// TestForwardAsRawChatCompletions_NonDeepSeekV4DoesNotConvertThinking 验证
+// 非 DeepSeek V4 模型不受 thinking 适配影响（回归测试）。
+func TestForwardAsRawChatCompletions_NonDeepSeekV4DoesNotConvertThinking(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"deepseek-reasoner","thinking":{"type":"adaptive"},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_non_ds_v4"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_non_ds_v4","object":"chat.completion","model":"deepseek-reasoner","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := rawChatCompletionsTestAccount()
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// 非 DeepSeek V4 模型的 thinking.type 应原样保留（不做转换）。
+	require.Equal(t, "adaptive", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
+		"非 DeepSeek V4 模型不应触发 thinking 适配")
+}
+
 func TestEnsureOpenAIChatStreamUsage(t *testing.T) {
 	t.Parallel()
 

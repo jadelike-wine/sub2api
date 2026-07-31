@@ -221,7 +221,7 @@ func parseGatewayRequestCurrentBody(parsed *ParsedRequest, protocol string) erro
 	parsed.MetadataUserID = gjson.Get(jsonStr, "metadata.user_id").String()
 
 	thinkingType := gjson.Get(jsonStr, "thinking.type").String()
-	parsed.ThinkingEnabled = thinkingType == "enabled" || thinkingType == "adaptive"
+	parsed.ThinkingEnabled = thinkingType == "enabled" || thinkingType == "adaptive" || thinkingType == "auto"
 
 	parsed.OutputEffort = strings.TrimSpace(gjson.Get(jsonStr, "output_config.effort").String())
 
@@ -349,6 +349,24 @@ func ParseGatewayRequest(body *RequestBodyRef, protocol string) (*ParsedRequest,
 	if err := parseGatewayRequestCurrentBody(parsed, protocol); err != nil {
 		return nil, err
 	}
+
+	// Anthropic 协议入口统一校验 + 标准化顶层 thinking 字段。
+	// 仅在入口执行一次；后续内部转换（MiniMax enabled→adaptive / Bedrock 等）
+	// 不会再触发该校验，避免误伤内部别名。流式与非流式共用同一路径。
+	if protocol == domain.PlatformAnthropic {
+		normalized, hadThinking, err := NormalizeAnthropicThinking(parsed.Body.Bytes())
+		if err != nil {
+			return nil, err
+		}
+		if hadThinking && !bytes.Equal(normalized, parsed.Body.Bytes()) {
+			parsed.Body.Replace(normalized)
+			// body 改动后重新解析派生字段（ThinkingEnabled / ranges 等）。
+			if err := parseGatewayRequestCurrentBody(parsed, protocol); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	return parsed, nil
 }
 
@@ -1157,7 +1175,7 @@ func filterThinkingBlocksInternal(body []byte, _ bool) []byte {
 	// Check if thinking is enabled
 	thinkingEnabled := false
 	if thinking, ok := req["thinking"].(map[string]any); ok {
-		if thinkType, ok := thinking["type"].(string); ok && (thinkType == "enabled" || thinkType == "adaptive") {
+		if thinkType, ok := thinking["type"].(string); ok && (thinkType == "enabled" || thinkType == "adaptive" || thinkType == "auto") {
 			thinkingEnabled = true
 		}
 	}
@@ -1407,13 +1425,15 @@ func isThinkingBudgetConstraintError(errMsg string) bool {
 }
 
 // RectifyThinkingBudget modifies the request body to fix budget_tokens constraint errors.
-// It sets thinking.budget_tokens = 32000, thinking.type = "enabled" (unless adaptive),
+// It sets thinking.budget_tokens = 32000, thinking.type = "enabled" (unless adaptive/auto),
 // and ensures max_tokens >= 32001.
 // Returns (modified body, true) if changes were applied, or (original body, false) if not.
 func RectifyThinkingBudget(body []byte) ([]byte, bool) {
-	// If thinking type is "adaptive", skip rectification entirely
+	// If thinking type is "adaptive" or "auto", skip rectification entirely:
+	// these modes do not use budget_tokens, and rewriting them to "enabled"
+	// would break the upstream contract (Bedrock Opus 4.7+ expects "auto").
 	thinkingType := gjson.GetBytes(body, "thinking.type").String()
-	if thinkingType == "adaptive" {
+	if thinkingType == "adaptive" || thinkingType == "auto" {
 		return body, false
 	}
 
@@ -1479,4 +1499,88 @@ func NormalizeChineseLLMThinking(body []byte, mappedModel string) ([]byte, bool)
 		return body, false
 	}
 	return modified, true
+}
+
+// isDeepSeekV4Model 判断映射后的模型 ID 是否属于 DeepSeek V4 协议族。
+// DeepSeek V4 上游（Flash / Pro 等）仅接受 thinking.type = enabled | disabled | auto，
+// 不接受 adaptive（会返回 400 "'type' must be in ["enabled", "disabled", "auto"]"）。
+// 匹配前缀 deepseek-v4，覆盖 deepseek-v4、deepseek-v4-flash、deepseek-v4-pro 等。
+func isDeepSeekV4Model(mappedModel string) bool {
+	id := strings.ToLower(strings.TrimSpace(mappedModel))
+	if id == "" {
+		return false
+	}
+	return strings.HasPrefix(id, "deepseek-v4")
+}
+
+// NormalizeDeepSeekV4Thinking 将 Anthropic 协议的 thinking 字段适配为 DeepSeek V4 上游契约。
+// 仅对 DeepSeek V4 系列模型调用（通过 isDeepSeekV4Model 判断），避免影响
+// MiniMax / Anthropic-strict / Bedrock 路径。
+//
+// 转换规则：
+//   - 未传 thinking → 不生成 thinking 字段。
+//   - thinking.type=adaptive → auto（DeepSeek V4 不接受 adaptive）。
+//   - thinking.type=enabled/disabled/auto → 保留原值。
+//   - thinking.type 为其他字符串 → 返回清晰 400 错误。
+//   - thinking 非对象或 type 非字符串 → 返回清晰 400 错误。
+//   - adaptive/auto/disabled 模式下移除 budget_tokens（上游仅 enabled 允许该字段）。
+//   - output_config.effort → 顶层 reasoning_effort，并删除 output_config 字段，
+//     避免同时发送两套配置。effort 允许值：low/medium/high。
+//
+// 并发安全：不修改入参 body 切片，所有改动通过 sjson 返回新切片。
+// 流式 / 非流式 / 工具调用续轮 / fallback 共用同一转换逻辑（在 gateway_forward.go
+// 的 pre-filter 阶段统一调用）。
+func NormalizeDeepSeekV4Thinking(body []byte) ([]byte, error) {
+	if len(body) == 0 {
+		return body, nil
+	}
+
+	thinking := gjson.GetBytes(body, "thinking")
+	if thinking.Exists() {
+		if !thinking.IsObject() {
+			return body, fmt.Errorf("unsupported thinking for DeepSeek V4; expected an object")
+		}
+
+		typeRes := thinking.Get("type")
+		if !typeRes.Exists() || typeRes.Type != gjson.String {
+			return body, fmt.Errorf("unsupported thinking.type for DeepSeek V4; expected adaptive, enabled, disabled, or auto")
+		}
+
+		t := typeRes.String()
+		switch t {
+		case "adaptive":
+			// adaptive → auto，并移除 budget_tokens（auto 模式不允许 budget_tokens）。
+			body, _ = sjson.SetBytes(body, "thinking.type", "auto")
+			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
+		case "enabled":
+			// 保留 enabled + budget_tokens（入口已校验 budget_tokens 合法性）。
+		case "disabled", "auto":
+			// disabled / auto 不允许 budget_tokens，移除避免上游 400。
+			if thinking.Get("budget_tokens").Exists() {
+				body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
+			}
+		default:
+			return body, fmt.Errorf("unsupported thinking.type %q for DeepSeek V4; expected adaptive, enabled, disabled, or auto", t)
+		}
+	}
+
+	// output_config.effort → reasoning_effort（顶层）。
+	// DeepSeek V4 使用顶层 reasoning_effort 而非 output_config.effort，
+	// 转换后删除 output_config 避免同时发送两套配置。
+	effortRes := gjson.GetBytes(body, "output_config.effort")
+	if effortRes.Exists() && effortRes.Type == gjson.String {
+		effort := strings.TrimSpace(effortRes.String())
+		switch effort {
+		case "low", "medium", "high":
+			body, _ = sjson.SetBytes(body, "reasoning_effort", effort)
+			body, _ = sjson.DeleteBytes(body, "output_config")
+		case "":
+			// 空字符串：删除 output_config 但不生成 reasoning_effort。
+			body, _ = sjson.DeleteBytes(body, "output_config")
+		default:
+			return body, fmt.Errorf("unsupported output_config.effort %q for DeepSeek V4; expected low, medium, or high", effort)
+		}
+	}
+
+	return body, nil
 }
