@@ -109,6 +109,12 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			input.Body = input.Parsed.Body.Bytes()
 		}
 
+		// 诊断日志 5（Passthrough 路径）：gateway.thinking.upstream_ready。
+		// 从最终 wireBody 重新读取 thinking.type，不复用之前变量。
+		if s.debugThinkingEnabled() {
+			s.logThinkingUpstreamReady(ctx, c, account, wireBody, upstreamReq.URL.String(), input.OriginalModel, input.RequestModel, input.RequestStream)
+		}
+
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 		if err != nil {
 			if resp != nil && resp.Body != nil {
@@ -260,6 +266,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 
 	if resp.StatusCode >= 400 {
+		// 诊断：上游错误时附带关键 thinking 链路字段（不受 GATEWAY_THINKING_DEBUG 开关控制，
+		// 仅当请求曾携带 thinking 时才输出，避免给无 thinking 请求增加噪声）。
+		s.emitThinkingUpstreamErrorOnFailure(ctx, c, account, input.OriginalModel, input.RequestModel)
 		return s.handleErrorResponse(ctx, resp, c, account, input.RequestModel)
 	}
 

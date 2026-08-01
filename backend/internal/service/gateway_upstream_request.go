@@ -207,11 +207,14 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		logClaudeMimicDebug(req, body, account, tokenType, mimicClaudeCode)
 	}
 
-	// 诊断日志 3/3：所有协议转换完成、最终发送上游之前。
-	// 此处 body 已经过 sanitizeAnthropicBodyForBetaTokens 等所有改写，
-	// 是真正发往上游的最终请求体。upstream_host 仅取 hostname。
+	// 诊断日志 5: gateway.thinking.upstream_ready —— 最终发送给上游的 thinking.type。
+	// 关键：从最终 body 重新读取 thinking.type，不复用之前变量，以便发现中间步骤的改动。
 	if s.debugThinkingEnabled() {
-		s.logThinkingOutgoing(ctx, c, account, body, req.URL.String(), modelID, reqStream)
+		requestedModel := recallIncomingPublicModel(c)
+		if requestedModel == "" {
+			requestedModel = modelID
+		}
+		s.logThinkingUpstreamReady(ctx, c, account, body, req.URL.String(), requestedModel, modelID, reqStream)
 	}
 
 	return req, body, nil
@@ -339,10 +342,14 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 		"stream":     strconv.FormatBool(reqStream),
 	})
 
-	// 诊断日志 3/3（Vertex 路径）：所有协议转换完成、最终发送上游之前。
-	// vertexBody 是 Vertex 路径的最终请求体。
+	// 诊断日志 5（Vertex 路径）：gateway.thinking.upstream_ready —— 最终发送给上游的 thinking.type。
+	// 从 vertexBody（Vertex 路径最终请求体）重新读取 thinking.type。
 	if s.debugThinkingEnabled() {
-		s.logThinkingOutgoing(ctx, c, account, vertexBody, req.URL.String(), modelID, reqStream)
+		requestedModel := recallIncomingPublicModel(c)
+		if requestedModel == "" {
+			requestedModel = modelID
+		}
+		s.logThinkingUpstreamReady(ctx, c, account, vertexBody, req.URL.String(), requestedModel, modelID, reqStream)
 	}
 
 	return req, nil

@@ -686,13 +686,13 @@ func TestIsOpenAIChatUsageOnlyStreamChunk(t *testing.T) {
 	require.False(t, isOpenAIChatUsageOnlyStreamChunk(``))
 }
 
-// TestForwardAsRawChatCompletions_DeepSeekV4AdaptiveThinkingConvertedToAuto 验证
-// OpenAI CC 直转路径在 DeepSeek V4 模型下将 thinking.type=adaptive 转换为 auto，
-// 避免上游 400 "'type' must be in ["enabled", "disabled", "auto"]"。
-func TestForwardAsRawChatCompletions_DeepSeekV4AdaptiveThinkingConvertedToAuto(t *testing.T) {
+// TestForwardAsRawChatCompletions_DeepSeekV4AutoThinkingConvertedToAdaptive 验证
+// OpenAI CC 直转路径在 DeepSeek V4 模型下将 thinking.type=auto 转换为 adaptive，
+// 避免上游 400 "thinking.type must be one of: enabled, disabled, adaptive; got \"auto\""。
+func TestForwardAsRawChatCompletions_DeepSeekV4AutoThinkingConvertedToAdaptive(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	body := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"adaptive","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	body := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"auto","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
@@ -714,11 +714,11 @@ func TestForwardAsRawChatCompletions_DeepSeekV4AdaptiveThinkingConvertedToAuto(t
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// 上游收到的 thinking.type 应为 auto，且不应包含 budget_tokens。
-	require.Equal(t, "auto", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
-		"adaptive 应被转换为 auto")
+	// 上游收到的 thinking.type 应为 adaptive，且不应包含 budget_tokens。
+	require.Equal(t, "adaptive", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
+		"auto 应被转换为 adaptive")
 	require.False(t, gjson.GetBytes(upstream.lastBody, "thinking.budget_tokens").Exists(),
-		"adaptive→auto 后不应携带 budget_tokens")
+		"auto→adaptive 后不应携带 budget_tokens")
 }
 
 // TestForwardAsRawChatCompletions_DeepSeekV4OutputConfigEffortConvertedToReasoningEffort

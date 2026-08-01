@@ -139,20 +139,20 @@ func TestParseGatewayRequest_ThinkingBudgetValidation(t *testing.T) {
 
 // ============ DeepSeek V4 thinking 适配测试 ============
 
-func TestNormalizeDeepSeekV4Thinking_AdaptiveToAuto(t *testing.T) {
-	body := []byte(`{"thinking":{"type":"adaptive"},"messages":[]}`)
+func TestNormalizeDeepSeekV4Thinking_AutoToAdaptive(t *testing.T) {
+	body := []byte(`{"thinking":{"type":"auto"},"messages":[]}`)
 	got, err := NormalizeDeepSeekV4Thinking(body)
 	require.NoError(t, err)
-	assert.Equal(t, "auto", gjson.GetBytes(got, "thinking.type").String())
+	assert.Equal(t, "adaptive", gjson.GetBytes(got, "thinking.type").String())
 }
 
-func TestNormalizeDeepSeekV4Thinking_AdaptiveStripsBudgetTokens(t *testing.T) {
-	body := []byte(`{"thinking":{"type":"adaptive","budget_tokens":10000},"messages":[]}`)
+func TestNormalizeDeepSeekV4Thinking_AutoStripsBudgetTokens(t *testing.T) {
+	body := []byte(`{"thinking":{"type":"auto","budget_tokens":10000},"messages":[]}`)
 	got, err := NormalizeDeepSeekV4Thinking(body)
 	require.NoError(t, err)
-	assert.Equal(t, "auto", gjson.GetBytes(got, "thinking.type").String())
+	assert.Equal(t, "adaptive", gjson.GetBytes(got, "thinking.type").String())
 	assert.False(t, gjson.GetBytes(got, "thinking.budget_tokens").Exists(),
-		"adaptive→auto 后不应携带 budget_tokens")
+		"auto→adaptive 后不应携带 budget_tokens")
 }
 
 func TestNormalizeDeepSeekV4Thinking_Enabled(t *testing.T) {
@@ -173,13 +173,13 @@ func TestNormalizeDeepSeekV4Thinking_Disabled(t *testing.T) {
 		"disabled 模式不应携带 budget_tokens")
 }
 
-func TestNormalizeDeepSeekV4Thinking_Auto(t *testing.T) {
-	body := []byte(`{"thinking":{"type":"auto","budget_tokens":5000},"messages":[]}`)
+func TestNormalizeDeepSeekV4Thinking_Adaptive(t *testing.T) {
+	body := []byte(`{"thinking":{"type":"adaptive","budget_tokens":5000},"messages":[]}`)
 	got, err := NormalizeDeepSeekV4Thinking(body)
 	require.NoError(t, err)
-	assert.Equal(t, "auto", gjson.GetBytes(got, "thinking.type").String())
+	assert.Equal(t, "adaptive", gjson.GetBytes(got, "thinking.type").String())
 	assert.False(t, gjson.GetBytes(got, "thinking.budget_tokens").Exists(),
-		"auto 模式不应携带 budget_tokens")
+		"adaptive 模式不应携带 budget_tokens")
 }
 
 func TestNormalizeDeepSeekV4Thinking_NoThinkingField(t *testing.T) {
@@ -226,10 +226,10 @@ func TestNormalizeDeepSeekV4Thinking_EmptyThinkingObject(t *testing.T) {
 }
 
 func TestNormalizeDeepSeekV4Thinking_ReasoningEffortConversion(t *testing.T) {
-	body := []byte(`{"thinking":{"type":"adaptive"},"output_config":{"effort":"high"},"messages":[]}`)
+	body := []byte(`{"thinking":{"type":"auto"},"output_config":{"effort":"high"},"messages":[]}`)
 	got, err := NormalizeDeepSeekV4Thinking(body)
 	require.NoError(t, err)
-	assert.Equal(t, "auto", gjson.GetBytes(got, "thinking.type").String())
+	assert.Equal(t, "adaptive", gjson.GetBytes(got, "thinking.type").String())
 	assert.Equal(t, "high", gjson.GetBytes(got, "reasoning_effort").String(),
 		"output_config.effort 应转换为顶层 reasoning_effort")
 	assert.False(t, gjson.GetBytes(got, "output_config").Exists(),
@@ -293,7 +293,7 @@ func TestNormalizeDeepSeekV4Thinking_ConcurrentIsolation(t *testing.T) {
 		require.NoError(t, <-done)
 	}
 	// 验证各请求结果互不污染。
-	assert.Equal(t, "auto", gjson.GetBytes(results[0], "thinking.type").String())
+	assert.Equal(t, "adaptive", gjson.GetBytes(results[0], "thinking.type").String())
 	assert.False(t, gjson.GetBytes(results[0], "thinking.budget_tokens").Exists())
 
 	assert.Equal(t, "disabled", gjson.GetBytes(results[1], "thinking.type").String())

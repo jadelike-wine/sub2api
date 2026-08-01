@@ -285,6 +285,11 @@ type ParsedRequest struct {
 	MaxTokens       int             // max_tokens 值（用于探测请求拦截）
 	SessionContext  *SessionContext // 可选：请求上下文区分因子（nil 时行为不变）
 
+	// InboundThinkingDiagnostics 缓存客户端原始请求中的 thinking 元数据，
+	// 在 NormalizeAnthropicThinking 执行**之前**提取。仅用于诊断日志，
+	// 不参与转发决策，不包含敏感内容（messages/system prompt/tools/凭证）。
+	InboundThinkingDiagnostics ThinkingDiagnostics
+
 	protocol      string    // 当前 Body 的协议格式，用于 Body 替换后刷新 raw range
 	systemRange   jsonRange // system/systemInstruction.parts 的 raw JSON 范围，绑定 Body 当前内容
 	messagesRange jsonRange // messages/contents 的 raw JSON 范围，绑定 Body 当前内容
@@ -354,6 +359,10 @@ func ParseGatewayRequest(body *RequestBodyRef, protocol string) (*ParsedRequest,
 	// 仅在入口执行一次；后续内部转换（MiniMax enabled→adaptive / Bedrock 等）
 	// 不会再触发该校验，避免误伤内部别名。流式与非流式共用同一路径。
 	if protocol == domain.PlatformAnthropic {
+		// 诊断：在 NormalizeAnthropicThinking 之前提取客户端原始 thinking 元数据，
+		// 缓存到 ParsedRequest 供后续日志阶段比较。仅记录枚举/布尔/数值，不含敏感内容。
+		parsed.InboundThinkingDiagnostics = extractThinkingDiagnostics(parsed.Body.Bytes())
+
 		normalized, hadThinking, err := NormalizeAnthropicThinking(parsed.Body.Bytes())
 		if err != nil {
 			return nil, err
@@ -1502,8 +1511,8 @@ func NormalizeChineseLLMThinking(body []byte, mappedModel string) ([]byte, bool)
 }
 
 // isDeepSeekV4Model 判断映射后的模型 ID 是否属于 DeepSeek V4 协议族。
-// DeepSeek V4 上游（Flash / Pro 等）仅接受 thinking.type = enabled | disabled | auto，
-// 不接受 adaptive（会返回 400 "'type' must be in ["enabled", "disabled", "auto"]"）。
+// DeepSeek V4 上游（Flash / Pro 等）仅接受 thinking.type = enabled | disabled | adaptive，
+// 不接受 auto（会返回 400 "thinking.type must be one of: enabled, disabled, adaptive; got \"auto\""）。
 // 匹配前缀 deepseek-v4，覆盖 deepseek-v4、deepseek-v4-flash、deepseek-v4-pro 等。
 func isDeepSeekV4Model(mappedModel string) bool {
 	id := strings.ToLower(strings.TrimSpace(mappedModel))
@@ -1519,11 +1528,11 @@ func isDeepSeekV4Model(mappedModel string) bool {
 //
 // 转换规则：
 //   - 未传 thinking → 不生成 thinking 字段。
-//   - thinking.type=adaptive → auto（DeepSeek V4 不接受 adaptive）。
-//   - thinking.type=enabled/disabled/auto → 保留原值。
+//   - thinking.type=auto → adaptive（DeepSeek V4 不接受 auto）。
+//   - thinking.type=enabled/disabled/adaptive → 保留原值。
 //   - thinking.type 为其他字符串 → 返回清晰 400 错误。
 //   - thinking 非对象或 type 非字符串 → 返回清晰 400 错误。
-//   - adaptive/auto/disabled 模式下移除 budget_tokens（上游仅 enabled 允许该字段）。
+//   - auto/adaptive/disabled 模式下移除 budget_tokens（上游仅 enabled 允许该字段）。
 //   - output_config.effort → 顶层 reasoning_effort，并删除 output_config 字段，
 //     避免同时发送两套配置。effort 允许值：low/medium/high。
 //
@@ -1548,14 +1557,14 @@ func NormalizeDeepSeekV4Thinking(body []byte) ([]byte, error) {
 
 		t := typeRes.String()
 		switch t {
-		case "adaptive":
-			// adaptive → auto，并移除 budget_tokens（auto 模式不允许 budget_tokens）。
-			body, _ = sjson.SetBytes(body, "thinking.type", "auto")
+		case "auto":
+			// auto → adaptive，并移除 budget_tokens（adaptive 模式不允许 budget_tokens）。
+			body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
 			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
 		case "enabled":
 			// 保留 enabled + budget_tokens（入口已校验 budget_tokens 合法性）。
-		case "disabled", "auto":
-			// disabled / auto 不允许 budget_tokens，移除避免上游 400。
+		case "disabled", "adaptive":
+			// disabled / adaptive 不允许 budget_tokens，移除避免上游 400。
 			if thinking.Get("budget_tokens").Exists() {
 				body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
 			}

@@ -196,6 +196,16 @@ func (s *GatewayService) executeBedrockUpstream(
 			return nil, err
 		}
 
+		// 诊断日志 5（Bedrock 路径）：gateway.thinking.upstream_ready。
+		// 从最终 bedrockBody 重新读取 thinking.type。requestedModel 从入口缓存恢复。
+		if s.debugThinkingEnabled() {
+			requestedModel := recallIncomingPublicModel(c)
+			if requestedModel == "" {
+				requestedModel = modelID
+			}
+			s.logThinkingUpstreamReady(ctx, c, account, body, upstreamReq.URL.String(), requestedModel, modelID, stream)
+		}
+
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, nil)
 		if err != nil {
 			if resp != nil && resp.Body != nil {
@@ -280,6 +290,10 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 	c *gin.Context,
 	account *Account,
 ) (*ForwardResult, error) {
+	// 诊断：上游错误时附带关键 thinking 链路字段（不受 GATEWAY_THINKING_DEBUG 开关控制，
+	// 仅当请求曾携带 thinking 时才输出）。
+	s.emitThinkingUpstreamErrorOnFailure(ctx, c, account, recallIncomingPublicModel(c), "")
+
 	// retry exhausted + failover
 	if s.shouldRetryUpstreamError(account, resp.StatusCode) {
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {

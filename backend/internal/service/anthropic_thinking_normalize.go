@@ -43,7 +43,8 @@ const MaxAnthropicThinkingBudgetTokens = 128000
 //     （错误消息固定为 "thinking.type must be one of: enabled, disabled, auto, adaptive"）。
 //     这会拒绝 "high"、"on"、"true" 等非法值，避免它们被透传给上游。
 //     "adaptive" 是允许的输入值（MiniMax / 新版 Claude 可能使用），由下游
-//     provider 适配层按需转换为上游契约值（如 DeepSeek V4 → auto）。
+//     provider 适配层按需转换为上游契约值（如 DeepSeek V4 要求 adaptive，
+//     入口的 auto 会被适配为 adaptive）。
 //  6. type=enabled|adaptive:
 //     - budget_tokens 存在时必须为正整数（JSON number、整数、>0、非 NaN/Inf）；
 //     字符串形式的数字、浮点数、0、负数均拒绝。

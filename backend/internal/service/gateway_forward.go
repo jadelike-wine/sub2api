@@ -93,29 +93,27 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return nil, fmt.Errorf("parse request: empty request")
 	}
 
-	// 诊断日志 1/3：请求完成初始解析后（ParseGatewayRequest 已执行，含 NormalizeAnthropicThinking）。
-	// 默认关闭，仅 GATEWAY_THINKING_DEBUG=true 时输出。不修改任何 thinking 转换逻辑。
+	// 诊断日志：thinking 链路追踪。
+	// 仅在 GATEWAY_THINKING_DEBUG=true 时输出完整阶段日志；上游错误时无论开关
+	// 是否开启都会在错误日志中附带关键诊断字段（见 emitThinkingUpstreamErrorOnFailure）。
+	// 不修改任何 thinking 转换规则、模型映射逻辑或请求转发行为。
+	if c != nil {
+		// 缓存 ParsedRequest 引用，供上游错误日志 fallback 重读最终 body 的 thinking.type。
+		c.Set("_parsed_request_ref", parsed)
+	}
 	if s.debugThinkingEnabled() {
-		incomingType, hasBudget, budget := extractThinkingInfoFromBody(parsed.Body.Bytes())
-		reqID, clientReqID := getRequestIDsFromContext(ctx)
-		publicModel := parsed.Model
-		logThinkingDebug(ctx, thinkingDebugFields{
-			event:           "gateway.thinking_incoming",
-			requestID:       reqID,
-			clientRequestID: clientReqID,
-			publicModel:     publicModel,
-			mappedModel:     publicModel, // 映射前 mapped == public
-			accountID:       accountIDOrZero(account),
-			accountName:     accountNameOrEmpty(account),
-			accountPlatform: accountPlatformOrEmpty(account),
-			provider:        accountTypeOrEmpty(account),
-			stream:          parsed.Stream,
-			thinkingType:    incomingType,
-			hasBudgetTokens: hasBudget,
-			budgetTokens:    budget,
-		})
-		// 缓存入口 thinking.type，供 outgoing 阶段判断是否被转换。
-		rememberIncomingThinkingState(c, incomingType, publicModel)
+		// 事件 1: gateway.thinking.inbound —— 客户端原始 thinking.type（NormalizeAnthropicThinking 前）。
+		// parsed.InboundThinkingDiagnostics 在 ParseGatewayRequest 中已提前缓存。
+		inboundDiag := parsed.InboundThinkingDiagnostics
+		// 缓存入口原始值，供后续阶段（provider_normalized / upstream_ready）比较。
+		rememberIncomingThinkingState(c, inboundDiag.Type, parsed.Model)
+		s.logThinkingInbound(ctx, account, inboundDiag, parsed.Model, parsed.Stream)
+
+		// 事件 2: gateway.thinking.entry_normalized —— NormalizeAnthropicThinking 完成后的 thinking.type。
+		// 从当前 body 重新读取，确保反映入口标准化结果（而非复用 inbound 缓存）。
+		entryDiag := extractThinkingDiagnostics(parsed.Body.Bytes())
+		rememberEntryThinkingType(c, entryDiag.Type)
+		s.logThinkingEntryNormalized(ctx, account, inboundDiag.Type, entryDiag, parsed.Model, parsed.Stream)
 	}
 
 	// Web Search 模拟：纯 web_search 请求时，直接调用搜索 API 构造响应
@@ -323,27 +321,15 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		logger.LegacyPrintf("service.gateway", "Model mapping applied: %s -> %s (account: %s, source=%s)", originalModel, mappedModel, account.Name, mappingSource)
 	}
 
-	// 诊断日志 2/3：账号和模型映射完成后。
-	// 记录 public_model → mapped_model 的映射结果及当前 thinking 状态。
+	// 诊断日志 3: gateway.thinking.route_resolved —— 账号选择 + 模型映射完成后。
+	// 记录 requested_model → mapped_model 的映射结果、转发路径与 thinking 协议。
 	// 此时 thinking 转换尚未执行（FilterThinkingBlocks / NormalizeChineseLLMThinking 等在后续 pre-filter 阶段）。
 	if s.debugThinkingEnabled() {
-		curType, hasBudget, budget := extractThinkingInfoFromBody(body)
-		reqID, clientReqID := getRequestIDsFromContext(ctx)
-		logThinkingDebug(ctx, thinkingDebugFields{
-			event:           "gateway.model_mapping",
-			requestID:       reqID,
-			clientRequestID: clientReqID,
-			publicModel:     originalModel,
-			mappedModel:     mappedModel,
-			accountID:       accountIDOrZero(account),
-			accountName:     accountNameOrEmpty(account),
-			accountPlatform: accountPlatformOrEmpty(account),
-			provider:        accountTypeOrEmpty(account),
-			stream:          reqStream,
-			thinkingType:    curType,
-			hasBudgetTokens: hasBudget,
-			budgetTokens:    budget,
-		})
+		entryType := recallEntryThinkingType(c)
+		if entryType == "" {
+			entryType = extractThinkingDiagnostics(body).Type
+		}
+		s.logThinkingRouteResolved(ctx, account, originalModel, mappedModel, entryType, reqStream)
 	}
 
 	if s.shouldInjectAnthropicCacheTTL1h(ctx, account) {
@@ -399,18 +385,26 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	// Chinese LLM thinking.type 协议差异补正（如 MiniMax 只接受 adaptive；Anthropic-SDK
 	// 客户端默认发 enabled）。仅对 passback-required 上游生效（claude-* 不会进来）。
 	if ResolveThinkingProtocol(reqModel) == ThinkingProtocolPassbackRequired {
+		beforeType := extractThinkingDiagnostics(body).Type
 		if rewritten, applied := NormalizeChineseLLMThinking(body, reqModel); applied {
 			if err := replaceBody(rewritten); err != nil {
 				return nil, err
 			}
 			logger.LegacyPrintf("service.gateway", "Account %d: rewrote thinking.type for %s (Anthropic-SDK default 'enabled' -> vendor-specific)", account.ID, reqModel)
+			afterType := extractThinkingDiagnostics(body).Type
+			rememberLastUpstreamThinkingType(c, afterType)
+			if s.debugThinkingEnabled() {
+				// 事件 4: gateway.thinking.provider_normalized —— provider 适配前后 thinking.type。
+				s.logThinkingProviderNormalized(ctx, account, originalModel, reqModel, beforeType, afterType, normalizerChineseLLM, reqStream)
+			}
 		}
 	}
 
-	// DeepSeek V4 thinking 适配：adaptive → auto，并处理 output_config.effort → reasoning_effort。
+	// DeepSeek V4 thinking 适配：auto → adaptive，并处理 output_config.effort → reasoning_effort。
 	// 仅对 DeepSeek V4 系列模型生效，避免影响 MiniMax / Anthropic-strict / Bedrock 路径。
 	// 流式 / 非流式 / 工具调用续轮 / fallback 共用此转换（每次进入 Forward 都会执行）。
 	if isDeepSeekV4Model(reqModel) {
+		beforeType := extractThinkingDiagnostics(body).Type
 		rewritten, err := NormalizeDeepSeekV4Thinking(body)
 		if err != nil {
 			return nil, err
@@ -420,6 +414,14 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				return nil, err
 			}
 			logger.LegacyPrintf("service.gateway", "Account %d: rewrote thinking for DeepSeek V4 (%s)", account.ID, reqModel)
+			afterType := extractThinkingDiagnostics(body).Type
+			rememberLastUpstreamThinkingType(c, afterType)
+			if s.debugThinkingEnabled() {
+				// 事件 4: gateway.thinking.provider_normalized —— provider 适配前后 thinking.type。
+				s.logThinkingProviderNormalized(ctx, account, originalModel, reqModel, beforeType, afterType, normalizerDeepSeekV4, reqStream)
+			}
+		} else {
+			rememberLastUpstreamThinkingType(c, beforeType)
 		}
 	}
 
@@ -728,6 +730,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return nil, errors.New("upstream request failed: empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	// 诊断：上游返回 >= 400 时附带关键 thinking 链路字段（不受 GATEWAY_THINKING_DEBUG
+	// 开关控制，仅当请求曾携带 thinking 时才输出，覆盖后续所有错误返回路径）。
+	if resp.StatusCode >= 400 {
+		s.emitThinkingUpstreamErrorOnFailure(ctx, c, account, originalModel, reqModel)
+	}
 
 	// 处理重试耗尽的情况
 	if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
