@@ -197,7 +197,7 @@ func getRequestIDsFromContext(ctx context.Context) (requestID, clientRequestID s
 // 已知的 thinking.type 转换路径（截至当前代码）：
 //   - NormalizeAnthropicThinking: 入口校验，拒绝非法值；disabled/auto 移除 budget_tokens
 //   - NormalizeChineseLLMThinking: MiniMax M 系列 enabled → adaptive
-//   - NormalizeDeepSeekV4Thinking: DeepSeek V4 系列 auto → adaptive
+//   - NormalizeDeepSeekV4Thinking: DeepSeek V4 系列 adaptive → auto
 //   - sanitizeBedrockThinking: Bedrock 路径 enabled/adaptive → auto（仅 Bedrock）
 //   - RectifyThinkingBudget: retry 路径，→ enabled（仅 anthropic-strict）
 func inferThinkingTransformRule(incomingType, outgoingType, mappedModel string) string {
@@ -206,9 +206,9 @@ func inferThinkingTransformRule(incomingType, outgoingType, mappedModel string) 
 	}
 	modelLower := strings.ToLower(mappedModel)
 
-	// DeepSeek V4：auto → adaptive
+	// DeepSeek V4：adaptive → auto
 	if strings.HasPrefix(modelLower, "deepseek-v4") {
-		if incomingType == "auto" && outgoingType == "adaptive" {
+		if incomingType == "adaptive" && outgoingType == "auto" {
 			return "NormalizeDeepSeekV4Thinking"
 		}
 	}

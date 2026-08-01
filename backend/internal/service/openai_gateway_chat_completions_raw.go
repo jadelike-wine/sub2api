@@ -96,8 +96,8 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 
 	// DeepSeek V4 thinking 适配（OpenAI CC 直转路径）：
-	// 客户端可能混合发送 Anthropic 风格的 thinking.type=auto 或 output_config.effort，
-	// DeepSeek V4 上游仅接受 thinking.type = enabled|disabled|adaptive，且使用顶层
+	// 客户端可能混合发送 Anthropic 风格的 thinking.type=adaptive 或 output_config.effort，
+	// DeepSeek V4 上游仅接受 thinking.type = enabled|disabled|auto，且使用顶层
 	// reasoning_effort 而非 output_config.effort。此处复用 Anthropic 路径同一适配器，
 	// 确保流式/非流式行为一致。
 	if isDeepSeekV4Model(upstreamModel) {

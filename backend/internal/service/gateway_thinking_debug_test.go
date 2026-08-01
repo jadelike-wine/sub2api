@@ -245,11 +245,11 @@ func TestInferThinkingTransformRule(t *testing.T) {
 			wantRule:    "type_changed:enabled->disabled",
 			wantApplied: true,
 		},
-		// DeepSeek V4: auto → adaptive（本次背景案例的核心转换）
+		// DeepSeek V4: adaptive → auto（本次背景案例的核心转换）
 		{
-			name:        "deepseek v4 auto to adaptive",
-			incoming:    "auto",
-			outgoing:    "adaptive",
+			name:        "deepseek v4 adaptive to auto",
+			incoming:    "adaptive",
+			outgoing:    "auto",
 			mappedModel: "deepseek-v4-flash",
 			wantRule:    "NormalizeDeepSeekV4Thinking",
 			wantApplied: true,
@@ -383,19 +383,19 @@ func TestLogThinkingRouteResolved_ModelMapping(t *testing.T) {
 }
 
 // TestLogThinkingProviderNormalized_DeepSeekV4 验证 DeepSeek V4 适配器执行前后
-// 分别记录入口值和 provider 适配后的值（auto → adaptive）。
+// 分别记录入口值和 provider 适配后的值（adaptive → auto）。
 func TestLogThinkingProviderNormalized_DeepSeekV4(t *testing.T) {
 	observedLog, logs := newThinkingDebugObservedLogger(t)
 	ctx := logger.IntoContext(context.Background(), observedLog)
 
 	svc := &GatewayService{}
 	svc.logThinkingProviderNormalized(ctx, nil, "claude-opus-5", "deepseek-v4-flash",
-		"auto", "adaptive", normalizerDeepSeekV4, false)
+		"adaptive", "auto", normalizerDeepSeekV4, false)
 
 	fields := thinkingDebugLoggedFields(t, logs)
 	assert.Equal(t, "gateway.thinking.provider_normalized", fields["event"])
-	assert.Equal(t, "auto", fields["thinking_type_before_provider_normalize"])
-	assert.Equal(t, "adaptive", fields["thinking_type_after_provider_normalize"])
+	assert.Equal(t, "adaptive", fields["thinking_type_before_provider_normalize"])
+	assert.Equal(t, "auto", fields["thinking_type_after_provider_normalize"])
 	assert.Equal(t, true, fields["thinking_changed"])
 	assert.Equal(t, "deepseek_v4", fields["normalizer"])
 }
@@ -410,12 +410,12 @@ func TestLogThinkingUpstreamReady_ReadsFromFinalBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(nil)
 	// 模拟入口处缓存的原始值
-	rememberIncomingThinkingState(c, "auto", "claude-opus-5")
-	rememberEntryThinkingType(c, "auto")
-	rememberLastUpstreamThinkingType(c, "adaptive")
+	rememberIncomingThinkingState(c, "adaptive", "claude-opus-5")
+	rememberEntryThinkingType(c, "adaptive")
+	rememberLastUpstreamThinkingType(c, "auto")
 
-	// 最终发送的 body（DeepSeek V4 适配后 auto → adaptive）
-	finalBody := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"adaptive"},"messages":[]}`)
+	// 最终发送的 body（DeepSeek V4 适配后 adaptive → auto）
+	finalBody := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"auto"},"messages":[]}`)
 
 	svc := &GatewayService{}
 	svc.logThinkingUpstreamReady(ctx, c,
@@ -426,10 +426,10 @@ func TestLogThinkingUpstreamReady_ReadsFromFinalBody(t *testing.T) {
 	fields := thinkingDebugLoggedFields(t, logs)
 	assert.Equal(t, "gateway.thinking.upstream_ready", fields["event"])
 	// thinking_type_before_upstream 必须从最终 body 重新读取
-	assert.Equal(t, "adaptive", fields["thinking_type_before_upstream"])
+	assert.Equal(t, "auto", fields["thinking_type_before_upstream"])
 	// 入口原始值仍保留
-	assert.Equal(t, "auto", fields["thinking_type_inbound_raw"])
-	assert.Equal(t, "auto", fields["thinking_type_after_entry_normalize"])
+	assert.Equal(t, "adaptive", fields["thinking_type_inbound_raw"])
+	assert.Equal(t, "adaptive", fields["thinking_type_after_entry_normalize"])
 	assert.Equal(t, "claude-opus-5", fields["requested_model"])
 	assert.Equal(t, "deepseek-v4-flash", fields["mapped_model"])
 	assert.Equal(t, true, fields["thinking_transform_applied"])
@@ -487,8 +487,8 @@ func TestLogThinkingUpstreamError_NoSensitiveData(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(nil)
-	rememberIncomingThinkingState(c, "auto", "claude-opus-5")
-	rememberLastUpstreamThinkingType(c, "adaptive")
+	rememberIncomingThinkingState(c, "adaptive", "claude-opus-5")
+	rememberLastUpstreamThinkingType(c, "auto")
 
 	svc := &GatewayService{}
 	svc.emitThinkingUpstreamErrorOnFailure(ctx, c,
@@ -563,10 +563,10 @@ func TestRememberAndRecallEntryAndUpstreamTypes(t *testing.T) {
 	assert.Equal(t, "", recallEntryThinkingType(c))
 	assert.Equal(t, "", recallLastUpstreamThinkingType(c))
 
-	rememberEntryThinkingType(c, "auto")
-	rememberLastUpstreamThinkingType(c, "adaptive")
-	assert.Equal(t, "auto", recallEntryThinkingType(c))
-	assert.Equal(t, "adaptive", recallLastUpstreamThinkingType(c))
+	rememberEntryThinkingType(c, "adaptive")
+	rememberLastUpstreamThinkingType(c, "auto")
+	assert.Equal(t, "adaptive", recallEntryThinkingType(c))
+	assert.Equal(t, "auto", recallLastUpstreamThinkingType(c))
 
 	// nil 不 panic
 	rememberEntryThinkingType(nil, "x")
