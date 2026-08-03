@@ -88,15 +88,15 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 
 	// Thinking type 适配：透传路径与标准 Forward 路径保持一致。
 	// 仅在 pre-filter 之后、构建上游请求之前执行，确保最终发送给上游的
-	// thinking.type 符合目标上游协议（如 DeepSeek V4 要求 adaptive，不接受 auto）。
-	// 详细规则见 gateway_forward.go 中 NormalizeChineseLLMThinking / NormalizeDeepSeekV4Thinking 的调用。
+	// thinking.type 符合目标上游协议（如 SenseNova 不接受 adaptive，DeepSeek V4 不接受 auto）。
+	// 详细规则见 gateway_thinking_dialect.go 中 ResolveThinkingDialect / NormalizeDeepSeekV4ThinkingForAccount。
 	if ResolveThinkingProtocol(input.RequestModel) == ThinkingProtocolPassbackRequired {
 		if rewritten, applied := NormalizeChineseLLMThinking(input.Body, input.RequestModel); applied {
 			input.Body = rewritten
 		}
 	}
 	if isDeepSeekV4Model(input.RequestModel) {
-		rewritten, err := NormalizeDeepSeekV4Thinking(input.Body)
+		rewritten, _, err := NormalizeDeepSeekV4ThinkingForAccount(account, input.RequestModel, input.Body)
 		if err != nil {
 			return nil, err
 		}

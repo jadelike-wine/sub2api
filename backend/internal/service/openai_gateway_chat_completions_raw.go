@@ -95,13 +95,14 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		upstreamBody = normalizedBody
 	}
 
-	// DeepSeek V4 thinking 适配（OpenAI CC 直转路径）：
+	// DeepSeek V4 / SenseNova thinking 适配（OpenAI CC 直转路径）：
 	// 客户端可能混合发送 Anthropic 风格的 thinking.type=adaptive 或 output_config.effort，
-	// DeepSeek V4 上游仅接受 thinking.type = enabled|disabled|auto，且使用顶层
-	// reasoning_effort 而非 output_config.effort。此处复用 Anthropic 路径同一适配器，
-	// 确保流式/非流式行为一致。
+	// 不同上游对 thinking.type 的接受值不同：
+	//   - SenseNova: 接受 enabled|disabled|auto，不接受 adaptive
+	//   - Native DeepSeek V4: 接受 enabled|disabled|adaptive，不接受 auto
+	// 此处复用统一适配入口，确保流式/非流式行为一致。
 	if isDeepSeekV4Model(upstreamModel) {
-		rewritten, err := NormalizeDeepSeekV4Thinking(upstreamBody)
+		rewritten, _, err := NormalizeDeepSeekV4ThinkingForAccount(account, upstreamModel, upstreamBody)
 		if err != nil {
 			writeChatCompletionsError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return nil, err

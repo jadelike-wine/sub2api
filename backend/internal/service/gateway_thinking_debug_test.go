@@ -245,13 +245,22 @@ func TestInferThinkingTransformRule(t *testing.T) {
 			wantRule:    "type_changed:enabled->disabled",
 			wantApplied: true,
 		},
-		// DeepSeek V4: auto → adaptive（本次背景案例的核心转换）
+		// DeepSeek V4: auto → adaptive（原生 DeepSeek 上游的核心转换）
 		{
 			name:        "deepseek v4 auto to adaptive",
 			incoming:    "auto",
 			outgoing:    "adaptive",
 			mappedModel: "deepseek-v4-flash",
 			wantRule:    "NormalizeDeepSeekV4Thinking",
+			wantApplied: true,
+		},
+		// SenseNova: adaptive → auto（SenseNova 上游的核心转换）
+		{
+			name:        "sensenova adaptive to auto",
+			incoming:    "adaptive",
+			outgoing:    "auto",
+			mappedModel: "deepseek-v4-flash",
+			wantRule:    "NormalizeSenseNovaThinking",
 			wantApplied: true,
 		},
 	}

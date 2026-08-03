@@ -128,6 +128,7 @@ const (
 	normalizerDeepSeekV4 = "deepseek_v4"
 	normalizerChineseLLM = "chinese_llm"
 	normalizerBedrock    = "bedrock"
+	normalizerSenseNova  = "sensenova"
 	normalizerNone       = "none"
 )
 

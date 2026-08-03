@@ -400,26 +400,26 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 	}
 
-	// DeepSeek V4 thinking 适配：auto → adaptive，并处理 output_config.effort → reasoning_effort。
-	// 仅对 DeepSeek V4 系列模型生效，避免影响 MiniMax / Anthropic-strict / Bedrock 路径。
+	// DeepSeek V4 / SenseNova thinking 协议适配。
+	// 根据实际上游（hostname）和映射模型决定使用哪种转换规则：
+	//   - SenseNova (token.sensenova.cn): adaptive → auto，不接受 adaptive
+	//   - Native DeepSeek (api.deepseek.com): auto → adaptive，不接受 auto
+	//   - 未知第三方上游: 保持原有行为（按 Native DeepSeek 规则处理）
 	// 流式 / 非流式 / 工具调用续轮 / fallback 共用此转换（每次进入 Forward 都会执行）。
 	if isDeepSeekV4Model(reqModel) {
 		beforeType := extractThinkingDiagnostics(body).Type
-		rewritten, err := NormalizeDeepSeekV4Thinking(body)
+		rewritten, dialect, err := NormalizeDeepSeekV4ThinkingForAccount(account, reqModel, body)
 		if err != nil {
 			return nil, err
 		}
+		normalizerName := resolveNormalizerName(dialect)
 		if !bytes.Equal(rewritten, body) {
 			if err := replaceBody(rewritten); err != nil {
 				return nil, err
 			}
-			logger.LegacyPrintf("service.gateway", "Account %d: rewrote thinking for DeepSeek V4 (%s)", account.ID, reqModel)
 			afterType := extractThinkingDiagnostics(body).Type
 			rememberLastUpstreamThinkingType(c, afterType)
-			if s.debugThinkingEnabled() {
-				// 事件 4: gateway.thinking.provider_normalized —— provider 适配前后 thinking.type。
-				s.logThinkingProviderNormalized(ctx, account, originalModel, reqModel, beforeType, afterType, normalizerDeepSeekV4, reqStream)
-			}
+			s.logThinkingDialectTransform(ctx, account, originalModel, reqModel, beforeType, afterType, dialect, normalizerName, reqStream)
 		} else {
 			rememberLastUpstreamThinkingType(c, beforeType)
 		}

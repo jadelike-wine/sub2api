@@ -817,6 +817,99 @@ func TestForwardAsRawChatCompletions_NonDeepSeekV4DoesNotConvertThinking(t *test
 		"非 DeepSeek V4 模型不应触发 thinking 适配")
 }
 
+// TestForwardAsRawChatCompletions_SenseNovaAdaptiveConvertedToAuto 验证
+// OpenAI CC 直转路径在 SenseNova 上游下将 thinking.type=adaptive 转换为 auto，
+// 避免 SenseNova 返回 400 "'type' must be in [\"enabled\", \"disabled\", \"auto\"]"。
+func TestForwardAsRawChatCompletions_SenseNovaAdaptiveConvertedToAuto(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"adaptive","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_sensenova"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_sensenova","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	// SenseNova 上游账号
+	account := &Account{
+		ID:          201,
+		Name:        "sensenova-openai-apikey",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sensenova-key",
+			"base_url": "https://token.sensenova.cn",
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// 上游收到的 thinking.type 应为 auto（adaptive → auto），且不应包含 budget_tokens。
+	require.Equal(t, "auto", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
+		"SenseNova: adaptive 应被转换为 auto")
+	require.False(t, gjson.GetBytes(upstream.lastBody, "thinking.budget_tokens").Exists(),
+		"SenseNova: adaptive→auto 后不应携带 budget_tokens")
+}
+
+// TestForwardAsRawChatCompletions_SenseNovaEnabledPreservesBudgetTokens 验证
+// OpenAI CC 直转路径在 SenseNova 上游下保留 thinking.type=enabled + budget_tokens。
+func TestForwardAsRawChatCompletions_SenseNovaEnabledPreservesBudgetTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"enabled","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_sensenova_enabled"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_sensenova_en","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          201,
+		Name:        "sensenova-openai-apikey",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sensenova-key",
+			"base_url": "https://token.sensenova.cn",
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Equal(t, "enabled", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
+		"SenseNova: enabled 应保持不变")
+	require.Equal(t, int64(10000), gjson.GetBytes(upstream.lastBody, "thinking.budget_tokens").Int(),
+		"SenseNova: enabled 模式应保留 budget_tokens")
+}
+
 func TestEnsureOpenAIChatStreamUsage(t *testing.T) {
 	t.Parallel()
 
