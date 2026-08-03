@@ -15,17 +15,17 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// TestGatewayForward_DeepSeekV4_AdaptiveThinkingWireBody 验证 Anthropic /v1/messages
+// TestGatewayForward_DeepSeekV4_AutoThinkingWireBody 验证 Anthropic /v1/messages
 // 标准转发路径在模型映射到 deepseek-v4-flash 后，最终发送给上游的 HTTP body 中
-// thinking.type 为 auto（adaptive → auto），且不含 budget_tokens。
+// thinking.type 为 adaptive（auto → adaptive），且不含 budget_tokens。
 //
 // 该测试断言的是 mock upstream 实际接收到的 wire body 字节，而非中间内存对象，
 // 用于捕获"重写了内存对象但最终用了原始 body"这类回归。
-func TestGatewayForward_DeepSeekV4_AdaptiveThinkingWireBody(t *testing.T) {
+func TestGatewayForward_DeepSeekV4_AutoThinkingWireBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	// 入站请求：claude-opus-5 + thinking.type=adaptive（流式，复刻生产场景）。
-	body := []byte(`{"model":"claude-opus-5","thinking":{"type":"adaptive","budget_tokens":10000},"max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	// 入站请求：claude-opus-5 + thinking.type=auto（流式，复刻生产场景）。
+	body := []byte(`{"model":"claude-opus-5","thinking":{"type":"auto","budget_tokens":10000},"max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 	parsed := &ParsedRequest{
 		Body:   NewRequestBodyRef(body),
 		Model:  "claude-opus-5",
@@ -102,21 +102,21 @@ func TestGatewayForward_DeepSeekV4_AdaptiveThinkingWireBody(t *testing.T) {
 	require.Equal(t, "deepseek-v4-flash", gjson.GetBytes(upstream.lastBody, "model").String(),
 		"最终上游 body 的 model 应为映射后的 deepseek-v4-flash")
 
-	// 断言 2：thinking.type 为 auto（adaptive → auto 转换生效）。
-	require.Equal(t, "auto", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
-		"adaptive 必须被转换为 auto，否则上游会返回 400")
+	// 断言 2：thinking.type 为 adaptive（auto → adaptive 转换生效）。
+	require.Equal(t, "adaptive", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
+		"auto 必须被转换为 adaptive，否则上游会返回 400")
 
-	// 断言 3：budget_tokens 已被移除（auto 模式不允许 budget_tokens）。
+	// 断言 3：budget_tokens 已被移除（adaptive 模式不允许 budget_tokens）。
 	require.False(t, gjson.GetBytes(upstream.lastBody, "thinking.budget_tokens").Exists(),
-		"adaptive→auto 后不应携带 budget_tokens")
+		"auto→adaptive 后不应携带 budget_tokens")
 }
 
-// TestGatewayForward_DeepSeekV4_AutoThinkingWireBody 验证 thinking.type=auto 输入时
-// 最终 wire body 仍为 auto（不被错误转换为 adaptive）。
-func TestGatewayForward_DeepSeekV4_AutoThinkingWireBody(t *testing.T) {
+// TestGatewayForward_DeepSeekV4_AdaptiveStaysAdaptiveWireBody 验证 thinking.type=adaptive 输入时
+// 最终 wire body 仍为 adaptive（保持不变，不应被错误转换为 auto）。
+func TestGatewayForward_DeepSeekV4_AdaptiveStaysAdaptiveWireBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	body := []byte(`{"model":"claude-opus-5","thinking":{"type":"auto","budget_tokens":10000},"max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	body := []byte(`{"model":"claude-opus-5","thinking":{"type":"adaptive","budget_tokens":10000},"max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 	parsed := &ParsedRequest{
 		Body:   NewRequestBodyRef(body),
 		Model:  "claude-opus-5",
@@ -130,7 +130,7 @@ func TestGatewayForward_DeepSeekV4_AutoThinkingWireBody(t *testing.T) {
 
 	upstreamSSE := strings.Join([]string{
 		`event: message_start`,
-		`data: {"type":"message_start","message":{"id":"msg_ds_v4_auto","type":"message","role":"assistant","content":[],"model":"deepseek-v4-flash","stop_reason":"","usage":{"input_tokens":5}}}`,
+		`data: {"type":"message_start","message":{"id":"msg_ds_v4_adaptive","type":"message","role":"assistant","content":[],"model":"deepseek-v4-flash","stop_reason":"","usage":{"input_tokens":5}}}`,
 		``,
 		`event: content_block_start`,
 		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"ok"}}`,
@@ -148,7 +148,7 @@ func TestGatewayForward_DeepSeekV4_AutoThinkingWireBody(t *testing.T) {
 			StatusCode: http.StatusOK,
 			Header: http.Header{
 				"Content-Type": []string{"text/event-stream"},
-				"x-request-id": []string{"rid_ds_v4_auto_wire"},
+				"x-request-id": []string{"rid_ds_v4_adaptive_wire"},
 			},
 			Body: io.NopCloser(strings.NewReader(upstreamSSE)),
 		},
@@ -189,10 +189,10 @@ func TestGatewayForward_DeepSeekV4_AutoThinkingWireBody(t *testing.T) {
 	require.NotNil(t, result)
 
 	require.Equal(t, "deepseek-v4-flash", gjson.GetBytes(upstream.lastBody, "model").String())
-	require.Equal(t, "auto", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
-		"auto 输入应保持 auto，不得被转换为 adaptive")
+	require.Equal(t, "adaptive", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
+		"adaptive 输入应保持 adaptive，不得被转换为 auto")
 	require.False(t, gjson.GetBytes(upstream.lastBody, "thinking.budget_tokens").Exists(),
-		"auto 模式不应携带 budget_tokens")
+		"adaptive 模式不应携带 budget_tokens")
 }
 
 // TestGatewayForward_DeepSeekV4_EnabledPreservesBudgetTokens 验证 thinking.type=enabled

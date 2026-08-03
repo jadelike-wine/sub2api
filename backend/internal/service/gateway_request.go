@@ -1482,9 +1482,10 @@ func RectifyThinkingBudget(body []byte) ([]byte, bool) {
 // LLM providers that use Anthropic-compatible endpoints but have different accepted
 // values for `thinking.type`. Currently scoped to:
 //   - MiniMax M-series (`MiniMax-m*`, covering M2.x / M3 / M3.x): official docs accept
-//     only `thinking.type` of "adaptive" or "disabled"; "enabled" is not a valid value
-//     and may be rejected/ignored. Pi-ai and other Anthropic-SDK clients default to
-//     "enabled" (Anthropic-original) and never auto-rewrite for non-Anthropic models.
+//     only `thinking.type` of "adaptive" or "disabled"; "enabled" and "auto" are not
+//     valid values and may be rejected/ignored. Pi-ai and other Anthropic-SDK clients
+//     default to "enabled" (Anthropic-original) and never auto-rewrite for non-Anthropic
+//     models. Some clients also send "auto" (another Anthropic-original value).
 //
 // Non-MiniMax models (Kimi/GLM/DeepSeek) currently accept "enabled" as-is, so this
 // function is intentionally a no-op for them. New Chinese LLM quirks should be
@@ -1494,13 +1495,18 @@ func RectifyThinkingBudget(body []byte) ([]byte, bool) {
 // if no rewrite was needed. Caller should be on the Anthropic forward path AFTER
 // FilterThinkingBlocks and BEFORE building the upstream request, only for
 // passback-required models (ResolveThinkingProtocol == PassbackRequired).
+//
+// Idempotent: "adaptive" input stays "adaptive"; applying twice produces the same
+// result.
 func NormalizeChineseLLMThinking(body []byte, mappedModel string) ([]byte, bool) {
 	modelLower := strings.ToLower(mappedModel)
 	if !strings.HasPrefix(modelLower, "minimax-m") {
 		return body, false
 	}
 	thinkingType := gjson.GetBytes(body, "thinking.type").String()
-	if thinkingType != "enabled" {
+	// MiniMax only accepts "adaptive" or "disabled". Convert "enabled" and "auto"
+	// (both are Anthropic-original values that clients may send) to "adaptive".
+	if thinkingType != "enabled" && thinkingType != "auto" {
 		return body, false
 	}
 	modified, err := sjson.SetBytes(body, "thinking.type", "adaptive")
@@ -1511,8 +1517,8 @@ func NormalizeChineseLLMThinking(body []byte, mappedModel string) ([]byte, bool)
 }
 
 // isDeepSeekV4Model 判断映射后的模型 ID 是否属于 DeepSeek V4 协议族。
-// DeepSeek V4 上游（Flash / Pro 等）仅接受 thinking.type = enabled | disabled | auto，
-// 不接受 adaptive（会返回 400 "'type' must be in [\"enabled\", \"disabled\", \"auto\"]"）。
+// DeepSeek V4 上游（Flash / Pro 等）接受 thinking.type = enabled | disabled | adaptive，
+// 不接受 auto（会返回 400 "thinking.type must be one of: enabled, disabled, adaptive; got \"auto\""）。
 // 匹配前缀 deepseek-v4，覆盖 deepseek-v4、deepseek-v4-flash、deepseek-v4-pro 等。
 func isDeepSeekV4Model(mappedModel string) bool {
 	id := strings.ToLower(strings.TrimSpace(mappedModel))
@@ -1526,15 +1532,18 @@ func isDeepSeekV4Model(mappedModel string) bool {
 // 仅对 DeepSeek V4 系列模型调用（通过 isDeepSeekV4Model 判断），避免影响
 // MiniMax / Anthropic-strict / Bedrock 路径。
 //
-// 转换规则：
+// 转换规则（基于目标上游协议做转换，内部 auto/adaptive 视为同一「自适应思考」语义）：
 //   - 未传 thinking → 不生成 thinking 字段。
-//   - thinking.type=adaptive → auto（DeepSeek V4 不接受 adaptive）。
-//   - thinking.type=enabled/disabled/auto → 保留原值。
+//   - thinking.type=auto → adaptive（DeepSeek V4 不接受 auto，只接受 adaptive）。
+//   - thinking.type=enabled/disabled/adaptive → 保留原值。
 //   - thinking.type 为其他字符串 → 返回清晰 400 错误。
 //   - thinking 非对象或 type 非字符串 → 返回清晰 400 错误。
 //   - adaptive/auto/disabled 模式下移除 budget_tokens（上游仅 enabled 允许该字段）。
 //   - output_config.effort → 顶层 reasoning_effort，并删除 output_config 字段，
 //     避免同时发送两套配置。effort 允许值：low/medium/high。
+//
+// 幂等性：adaptive 输入保持 adaptive，不会被反复转换。auto 输入转为 adaptive 后，
+// 再次调用不会再变化。
 //
 // 并发安全：不修改入参 body 切片，所有改动通过 sjson 返回新切片。
 // 流式 / 非流式 / 工具调用续轮 / fallback 共用同一转换逻辑（在 gateway_forward.go
@@ -1557,14 +1566,20 @@ func NormalizeDeepSeekV4Thinking(body []byte) ([]byte, error) {
 
 		t := typeRes.String()
 		switch t {
-		case "adaptive":
-			// adaptive → auto，并移除 budget_tokens（auto 模式不允许 budget_tokens）。
-			body, _ = sjson.SetBytes(body, "thinking.type", "auto")
+		case "auto":
+			// auto → adaptive（DeepSeek V4 不接受 auto，只接受 adaptive），
+			// 并移除 budget_tokens（adaptive 模式不允许 budget_tokens）。
+			body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
 			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
+		case "adaptive":
+			// adaptive 已符合 DeepSeek V4 契约，移除 budget_tokens（adaptive 模式不允许）。
+			if thinking.Get("budget_tokens").Exists() {
+				body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
+			}
 		case "enabled":
 			// 保留 enabled + budget_tokens（入口已校验 budget_tokens 合法性）。
-		case "disabled", "auto":
-			// disabled / auto 不允许 budget_tokens，移除避免上游 400。
+		case "disabled":
+			// disabled 不允许 budget_tokens，移除避免上游 400。
 			if thinking.Get("budget_tokens").Exists() {
 				body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
 			}

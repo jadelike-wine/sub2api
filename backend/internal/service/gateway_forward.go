@@ -400,7 +400,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 	}
 
-	// DeepSeek V4 thinking 适配：adaptive → auto，并处理 output_config.effort → reasoning_effort。
+	// DeepSeek V4 thinking 适配：auto → adaptive，并处理 output_config.effort → reasoning_effort。
 	// 仅对 DeepSeek V4 系列模型生效，避免影响 MiniMax / Anthropic-strict / Bedrock 路径。
 	// 流式 / 非流式 / 工具调用续轮 / fallback 共用此转换（每次进入 Forward 都会执行）。
 	if isDeepSeekV4Model(reqModel) {

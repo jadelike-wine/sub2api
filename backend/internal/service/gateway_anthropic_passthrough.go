@@ -85,6 +85,26 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	// passback-required third-party upstreams such as GLM/Kimi/DeepSeek,
 	// which reject server_tool_use with 400). input.RequestModel 已是映射后的模型 ID。
 	input.Body = FilterWebSearchHistoryBlocks(input.Body, input.RequestModel)
+
+	// Thinking type 适配：透传路径与标准 Forward 路径保持一致。
+	// 仅在 pre-filter 之后、构建上游请求之前执行，确保最终发送给上游的
+	// thinking.type 符合目标上游协议（如 DeepSeek V4 要求 adaptive，不接受 auto）。
+	// 详细规则见 gateway_forward.go 中 NormalizeChineseLLMThinking / NormalizeDeepSeekV4Thinking 的调用。
+	if ResolveThinkingProtocol(input.RequestModel) == ThinkingProtocolPassbackRequired {
+		if rewritten, applied := NormalizeChineseLLMThinking(input.Body, input.RequestModel); applied {
+			input.Body = rewritten
+		}
+	}
+	if isDeepSeekV4Model(input.RequestModel) {
+		rewritten, err := NormalizeDeepSeekV4Thinking(input.Body)
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(rewritten, input.Body) {
+			input.Body = rewritten
+		}
+	}
+
 	if input.Parsed != nil {
 		// 透传分支也会改写实际 wire body，成功 usage hash 依赖这里同步当前 body。
 		if err := input.Parsed.ReplaceBody(input.Body); err != nil {

@@ -139,20 +139,24 @@ func TestParseGatewayRequest_ThinkingBudgetValidation(t *testing.T) {
 
 // ============ DeepSeek V4 thinking 适配测试 ============
 
-func TestNormalizeDeepSeekV4Thinking_AdaptiveToAuto(t *testing.T) {
+// TestNormalizeDeepSeekV4Thinking_AdaptiveStaysAdaptive 验证 adaptive 输入保持不变
+// （DeepSeek V4 上游接受 adaptive）。
+func TestNormalizeDeepSeekV4Thinking_AdaptiveStaysAdaptive(t *testing.T) {
 	body := []byte(`{"thinking":{"type":"adaptive"},"messages":[]}`)
 	got, err := NormalizeDeepSeekV4Thinking(body)
 	require.NoError(t, err)
-	assert.Equal(t, "auto", gjson.GetBytes(got, "thinking.type").String())
+	assert.Equal(t, "adaptive", gjson.GetBytes(got, "thinking.type").String(),
+		"adaptive 应保持不变，不应被转换为 auto")
 }
 
+// TestNormalizeDeepSeekV4Thinking_AdaptiveStripsBudgetTokens 验证 adaptive 模式移除 budget_tokens。
 func TestNormalizeDeepSeekV4Thinking_AdaptiveStripsBudgetTokens(t *testing.T) {
 	body := []byte(`{"thinking":{"type":"adaptive","budget_tokens":10000},"messages":[]}`)
 	got, err := NormalizeDeepSeekV4Thinking(body)
 	require.NoError(t, err)
-	assert.Equal(t, "auto", gjson.GetBytes(got, "thinking.type").String())
+	assert.Equal(t, "adaptive", gjson.GetBytes(got, "thinking.type").String())
 	assert.False(t, gjson.GetBytes(got, "thinking.budget_tokens").Exists(),
-		"adaptive→auto 后不应携带 budget_tokens")
+		"adaptive 模式不应携带 budget_tokens")
 }
 
 func TestNormalizeDeepSeekV4Thinking_Enabled(t *testing.T) {
@@ -173,13 +177,16 @@ func TestNormalizeDeepSeekV4Thinking_Disabled(t *testing.T) {
 		"disabled 模式不应携带 budget_tokens")
 }
 
-func TestNormalizeDeepSeekV4Thinking_Auto(t *testing.T) {
+// TestNormalizeDeepSeekV4Thinking_AutoToAdaptive 验证 auto 输入被转换为 adaptive
+// （DeepSeek V4 上游不接受 auto，只接受 adaptive）。
+func TestNormalizeDeepSeekV4Thinking_AutoToAdaptive(t *testing.T) {
 	body := []byte(`{"thinking":{"type":"auto","budget_tokens":5000},"messages":[]}`)
 	got, err := NormalizeDeepSeekV4Thinking(body)
 	require.NoError(t, err)
-	assert.Equal(t, "auto", gjson.GetBytes(got, "thinking.type").String())
+	assert.Equal(t, "adaptive", gjson.GetBytes(got, "thinking.type").String(),
+		"auto 必须被转换为 adaptive，否则上游会返回 400")
 	assert.False(t, gjson.GetBytes(got, "thinking.budget_tokens").Exists(),
-		"auto 模式不应携带 budget_tokens")
+		"auto→adaptive 后不应携带 budget_tokens")
 }
 
 func TestNormalizeDeepSeekV4Thinking_NoThinkingField(t *testing.T) {
@@ -229,7 +236,7 @@ func TestNormalizeDeepSeekV4Thinking_ReasoningEffortConversion(t *testing.T) {
 	body := []byte(`{"thinking":{"type":"adaptive"},"output_config":{"effort":"high"},"messages":[]}`)
 	got, err := NormalizeDeepSeekV4Thinking(body)
 	require.NoError(t, err)
-	assert.Equal(t, "auto", gjson.GetBytes(got, "thinking.type").String())
+	assert.Equal(t, "adaptive", gjson.GetBytes(got, "thinking.type").String())
 	assert.Equal(t, "high", gjson.GetBytes(got, "reasoning_effort").String(),
 		"output_config.effort 应转换为顶层 reasoning_effort")
 	assert.False(t, gjson.GetBytes(got, "output_config").Exists(),
@@ -252,7 +259,7 @@ func TestNormalizeDeepSeekV4Thinking_IllegalEffort(t *testing.T) {
 }
 
 func TestNormalizeDeepSeekV4Thinking_NoOutputConfig(t *testing.T) {
-	body := []byte(`{"thinking":{"type":"auto"},"messages":[]}`)
+	body := []byte(`{"thinking":{"type":"adaptive"},"messages":[]}`)
 	got, err := NormalizeDeepSeekV4Thinking(body)
 	require.NoError(t, err)
 	assert.False(t, gjson.GetBytes(got, "reasoning_effort").Exists(),
@@ -260,8 +267,35 @@ func TestNormalizeDeepSeekV4Thinking_NoOutputConfig(t *testing.T) {
 	assert.False(t, gjson.GetBytes(got, "output_config").Exists())
 }
 
+// TestNormalizeDeepSeekV4Thinking_Idempotent 验证重复归一化的幂等性：
+// 同一个请求经过归一化函数多次，结果不能来回变化。
+func TestNormalizeDeepSeekV4Thinking_Idempotent(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"auto to adaptive then stays adaptive", `{"thinking":{"type":"auto"},"messages":[]}`, "adaptive"},
+		{"adaptive stays adaptive", `{"thinking":{"type":"adaptive"},"messages":[]}`, "adaptive"},
+		{"enabled stays enabled", `{"thinking":{"type":"enabled","budget_tokens":10000},"messages":[]}`, "enabled"},
+		{"disabled stays disabled", `{"thinking":{"type":"disabled"},"messages":[]}`, "disabled"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			first, err := NormalizeDeepSeekV4Thinking([]byte(tt.body))
+			require.NoError(t, err)
+			second, err := NormalizeDeepSeekV4Thinking(first)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, gjson.GetBytes(second, "thinking.type").String(),
+				"第二次归一化后 thinking.type 应保持稳定")
+			assert.Equal(t, string(first), string(second),
+				"两次归一化后的 body 应完全一致")
+		})
+	}
+}
+
 func TestNormalizeDeepSeekV4Thinking_DoesNotMutateInput(t *testing.T) {
-	original := []byte(`{"thinking":{"type":"adaptive","budget_tokens":10000},"output_config":{"effort":"high"},"messages":[]}`)
+	original := []byte(`{"thinking":{"type":"auto","budget_tokens":10000},"output_config":{"effort":"high"},"messages":[]}`)
 	snapshot := make([]byte, len(original))
 	copy(snapshot, original)
 
@@ -274,7 +308,7 @@ func TestNormalizeDeepSeekV4Thinking_DoesNotMutateInput(t *testing.T) {
 func TestNormalizeDeepSeekV4Thinking_ConcurrentIsolation(t *testing.T) {
 	// 并发运行不同 thinking 配置，验证请求级隔离。
 	bodies := [][]byte{
-		[]byte(`{"thinking":{"type":"adaptive","budget_tokens":10000},"messages":[]}`),
+		[]byte(`{"thinking":{"type":"auto","budget_tokens":10000},"messages":[]}`),
 		[]byte(`{"thinking":{"type":"disabled"},"messages":[]}`),
 		[]byte(`{"messages":[]}`),
 		[]byte(`{"thinking":{"type":"enabled","budget_tokens":5000},"output_config":{"effort":"low"},"messages":[]}`),
@@ -293,7 +327,8 @@ func TestNormalizeDeepSeekV4Thinking_ConcurrentIsolation(t *testing.T) {
 		require.NoError(t, <-done)
 	}
 	// 验证各请求结果互不污染。
-	assert.Equal(t, "auto", gjson.GetBytes(results[0], "thinking.type").String())
+	// auto → adaptive（DeepSeek V4 不接受 auto，只接受 adaptive）
+	assert.Equal(t, "adaptive", gjson.GetBytes(results[0], "thinking.type").String())
 	assert.False(t, gjson.GetBytes(results[0], "thinking.budget_tokens").Exists())
 
 	assert.Equal(t, "disabled", gjson.GetBytes(results[1], "thinking.type").String())
@@ -1578,6 +1613,20 @@ func TestNormalizeChineseLLMThinking(t *testing.T) {
 			name:          "minimax m2.7 enabled -> adaptive",
 			model:         "MiniMax-M2.7",
 			input:         `{"model":"MiniMax-M2.7","thinking":{"type":"enabled","budget_tokens":4096},"messages":[]}`,
+			wantApplied:   true,
+			wantTypeValue: "adaptive",
+		},
+		{
+			name:          "minimax m3 auto -> adaptive",
+			model:         "MiniMax-M3",
+			input:         `{"model":"MiniMax-M3","thinking":{"type":"auto"},"messages":[]}`,
+			wantApplied:   true,
+			wantTypeValue: "adaptive",
+		},
+		{
+			name:          "minimax m2.7 auto -> adaptive",
+			model:         "MiniMax-M2.7",
+			input:         `{"model":"MiniMax-M2.7","thinking":{"type":"auto"},"messages":[]}`,
 			wantApplied:   true,
 			wantTypeValue: "adaptive",
 		},
