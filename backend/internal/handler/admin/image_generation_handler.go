@@ -436,13 +436,13 @@ func (h *ImageGenerationHandler) UpdateGenerationConfig(c *gin.Context) {
 // ==================== AI 生图总开关 ====================
 
 // imageGenerationEnabledResponse 是 AI 生图总开关的响应体。
-// 同时返回 settings 中的覆盖值和 config.yaml 默认值，便于前端展示"当前生效值"。
+// 同时返回 settings 中的生效值和 config.yaml 默认值，便于前端展示"当前生效值"。
 type imageGenerationEnabledResponse struct {
-	// Enabled 当前生效值（settings 覆盖 > config 默认）。
+	// Enabled 当前生效值（settings 覆盖 > config 默认，未配置时默认关闭）。
 	Enabled bool `json:"enabled"`
-	// ConfigDefault config.yaml 中的默认值（供前端展示"未配置时回退到 X"）。
+	// ConfigDefault config.yaml 中的默认值（仅作展示，不再作为生效兜底）。
 	ConfigDefault bool `json:"config_default"`
-	// Configured 是否已在后台显式配置（true=使用 settings 值，false=使用 config 默认）。
+	// Configured 是否已在后台显式配置（true=使用 settings 值，false=默认关闭）。
 	Configured bool `json:"configured"`
 }
 
@@ -470,10 +470,10 @@ func (h *ImageGenerationHandler) GetImageGenerationEnabled(c *gin.Context) {
 		return
 	}
 	if !configured {
-		// 未配置：返回 config 默认值
+		// 未配置：默认关闭（不再使用 config.yaml 兜底）
 		response.Success(c, imageGenerationEnabledResponse{
-			Enabled:       configDefault,
-			ConfigDefault: configDefault,
+			Enabled:       false,
+			ConfigDefault: false,
 			Configured:    false,
 		})
 		return

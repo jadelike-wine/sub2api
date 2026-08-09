@@ -197,6 +197,7 @@ import { sanitizeSvg } from '@/utils/sanitize'
 import { sanitizeUrl } from '@/utils/url'
 import { FeatureFlags, makeSidebarFlag } from '@/utils/featureFlags'
 import { useBatchImageAccess } from '@/composables/useBatchImageAccess'
+import { imageGenerationAPI } from '@/api/imageGeneration'
 
 interface NavItem {
   path: string
@@ -704,6 +705,20 @@ const flagOpsMonitoring = () => adminSettingsStore.opsMonitoringEnabled
 const flagAdminPayment = () => adminSettingsStore.paymentEnabled
 const flagBatchImageAccess = () => canUseBatchImage.value
 
+// AI 生图功能开关（用户端只读，未加载前默认关闭以隐藏入口）
+const aiImageEnabled = ref(false)
+const flagAiImage = () => aiImageEnabled.value
+
+async function refreshAiImageAccess() {
+  try {
+    const { enabled } = await imageGenerationAPI.getImageGenerationEnabled()
+    aiImageEnabled.value = enabled
+  } catch {
+    // 查询失败时保持关闭（隐藏入口），避免展示不可用的功能
+    aiImageEnabled.value = false
+  }
+}
+
 // buildSelfNavItems 构造用户自己的导航项（用户端主菜单和管理员的"我的账户"子菜单共享这组声明）。
 // withDashboard=true 时包含仪表盘（用户端），false 时不含（管理员的个人区已经有独立仪表盘入口）。
 //
@@ -720,7 +735,7 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
     { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },
     { path: '/monitor', label: t('nav.channelStatus'), icon: SignalIcon, featureFlag: flagChannelMonitor },
-    { path: '/ai-image', label: t('nav.aiImage'), icon: AiImageIcon, hideInSimpleMode: true },
+    { path: '/ai-image', label: t('nav.aiImage'), icon: AiImageIcon, hideInSimpleMode: true, featureFlag: flagAiImage },
     { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, hideInSimpleMode: true },
     { path: '/purchase', label: t('nav.buySubscription'), icon: RechargeSubscriptionIcon, hideInSimpleMode: true, featureFlag: flagPayment },
     { path: '/orders', label: t('nav.myOrders'), icon: OrderListIcon, hideInSimpleMode: true, featureFlag: flagPayment },
@@ -952,6 +967,7 @@ watch(
 
 onMounted(() => {
   void refreshBatchImageAccess()
+  void refreshAiImageAccess()
   if (isAdmin.value) {
     adminSettingsStore.fetch()
   }

@@ -170,6 +170,9 @@ func RegisterUserRoutes(
 // registerImageGenerationUserRoutes 注册用户侧图片生成路由（会话 / 生成任务 / 资产上传）。
 // 所有路由已通过 authenticated 分组应用 JWT 鉴权与 BackendModeUserGuard。
 func registerImageGenerationUserRoutes(authenticated *gin.RouterGroup, h *handler.Handlers) {
+	// AI 生图功能开关（只读，供前端隐藏/展示入口）
+	authenticated.GET("/image-generation/enabled", h.ImageGeneration.GetEnabled)
+
 	// 会话
 	conversations := authenticated.Group("/image-conversations")
 	{

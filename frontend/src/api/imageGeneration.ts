@@ -24,6 +24,15 @@ import type {
 // ==================== Conversations ====================
 
 /**
+ * 查询 AI 生图功能是否启用（用户端只读，用于隐藏/展示文生图入口）。
+ * 后端生效值：管理员后台显式配置优先；未配置时默认关闭。
+ */
+export async function getImageGenerationEnabled(): Promise<{ enabled: boolean }> {
+  const { data } = await apiClient.get<{ enabled: boolean }>('/image-generation/enabled')
+  return data
+}
+
+/**
  * List image conversations for the current user.
  * @param params - Pagination / keyword filters
  * @param options.signal - Optional AbortSignal for cancellation
@@ -238,6 +247,8 @@ export async function refreshAssetURL(
 // ==================== Aggregated Export ====================
 
 export const imageGenerationAPI = {
+  // Feature toggle (read-only)
+  getImageGenerationEnabled,
   // Conversations
   listConversations,
   getConversation,

@@ -887,15 +887,22 @@ func (s *ImageGenerationService) RecoverStaleGenerations(ctx context.Context) (i
 // ==================== 辅助方法 ====================
 
 // isEnabled 返回 AI 生图功能是否启用。
-// 逻辑：管理员后台显式配置（settings DB）优先；未配置时回退到 config.yaml 的
-// image_generation.enabled 默认值。DB 读写出错时静默回退配置默认，避免误伤可用态。
+// 逻辑：管理员后台显式配置（settings DB）优先；未配置时默认关闭。
+// 不再回退到 config.yaml 的 image_generation.enabled——后台关闭就真的关闭，
+// 后台开启就真的开启，未配置即为关闭。
 func (s *ImageGenerationService) isEnabled(ctx context.Context) bool {
 	if s.settingService != nil {
 		if on, configured, err := s.settingService.GetImageGenerationEnabled(ctx); err == nil && configured {
 			return on
 		}
 	}
-	return s.cfg.Enabled
+	return false
+}
+
+// IsEnabled 返回 AI 生图功能是否启用（供用户端只读查询隐藏/展示入口使用）。
+// 逻辑与 isEnabled 一致：管理员后台显式配置优先；未配置时默认关闭。
+func (s *ImageGenerationService) IsEnabled(ctx context.Context) bool {
+	return s.isEnabled(ctx)
 }
 
 // buildOutputS3Key 构造输出图片的 S3 Key（相对 key，不含存储前缀）。

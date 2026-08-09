@@ -50,6 +50,14 @@ type UpdateConversationRequest struct {
 	Title string `json:"title" binding:"required"`
 }
 
+// GetEnabled 返回 AI 生图功能是否启用（用户端只读查询，用于隐藏/展示入口）。
+// GET /api/v1/image-generation/enabled
+func (h *ImageGenerationHandler) GetEnabled(c *gin.Context) {
+	response.Success(c, gin.H{
+		"enabled": h.genService.IsEnabled(c.Request.Context()),
+	})
+}
+
 // CreateConversation 创建用户的图片生成会话。
 // POST /api/v1/image-conversations
 func (h *ImageGenerationHandler) CreateConversation(c *gin.Context) {
