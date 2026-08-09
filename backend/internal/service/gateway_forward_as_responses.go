@@ -444,6 +444,16 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		}
 	}
 
+	// 确定性身份改写：把 content 中的 Agnes / Sapiens 等替换成公开模型名，
+	// 作为提示词注入之外的兜底，确保上游模型坚持自称 Agnes 时客户端看到的仍是公开身份。
+	if publicModel := getPublicModelFromContext(c); publicModel != "" {
+		for i := range finalResp.Content {
+			if finalResp.Content[i].Type == "text" {
+				finalResp.Content[i].Text = rewriteIdentityInContent(finalResp.Content[i].Text, publicModel)
+			}
+		}
+	}
+
 	// Convert to Responses format
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
 	responsesResp.Model = originalModel // Use original model name
@@ -504,6 +514,9 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 	state := apicompat.NewAnthropicEventToResponsesState()
 	state.Model = originalModel
 	clientToolRestorer := apicompat.NewResponsesClientToolStreamRestorer(clientToolMapping)
+	// 确定性身份改写兜底：流式 text_delta 中若出现 Agnes / Sapiens 等上游身份词，
+	// 替换成公开模型名，确保客户端看到的始终是公开身份。
+	streamPublicModel := getPublicModelFromContext(c)
 	var usage ClaudeUsage
 	var firstTokenMs *int
 	firstChunk := true
@@ -543,6 +556,11 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		// Also capture usage from message_start
 		if event.Type == "message_start" && event.Message != nil {
 			mergeAnthropicUsage(&usage, event.Message.Usage)
+		}
+
+		// 确定性身份改写：流式 text_delta 中替换上游身份词为公开模型名。
+		if event.Type == "content_block_delta" && event.Delta != nil && event.Delta.Type == "text_delta" && streamPublicModel != "" {
+			event.Delta.Text = rewriteIdentityInContent(event.Delta.Text, streamPublicModel)
 		}
 
 		// Convert to Responses events

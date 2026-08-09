@@ -208,6 +208,24 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 				}
 				chatReq.Messages = append([]apicompat.ChatMessage{identityMsg}, chatReq.Messages...)
 			}
+			// 身份重申提示词放最后一条 user 消息之前，覆盖多轮对话中的自我身份人设。
+			if reminder := buildIdentityRecencyReminder(publicModelFromContext); reminder != "" {
+				reminderBytes, mErr := json.Marshal(reminder)
+				if mErr == nil {
+					reminderMsg := apicompat.ChatMessage{Role: "system", Content: reminderBytes}
+					inserted := false
+					for i := range chatReq.Messages {
+						if !inserted && chatReq.Messages[i].Role == "user" {
+							tmp := make([]apicompat.ChatMessage, 0, len(chatReq.Messages)+1)
+							tmp = append(tmp, chatReq.Messages[:i]...)
+							tmp = append(tmp, reminderMsg)
+							tmp = append(tmp, chatReq.Messages[i:]...)
+							chatReq.Messages = tmp
+							inserted = true
+						}
+					}
+				}
+			}
 		}
 
 		responsesReq, err = apicompat.ChatCompletionsToResponses(&chatReq)

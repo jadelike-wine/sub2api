@@ -134,14 +134,26 @@ func buildIdentitySystemPrompt(publicModel string) string {
 6. 当用户正常询问某个外部模型、公司或产品的公开知识时，可以正常回答，不要将所有相关关键词一律屏蔽。`, publicModel, publicModel, publicModel)
 }
 
-// injectIdentitySystemPrompt 在请求体 messages 数组最前面插入一条身份提示词 system 消息。
+// buildIdentityRecencyReminder 构造一条短促的身份重申提示词，注入到客户端最后一条
+// user 消息之前，用于覆盖多轮对话中模型可能已形成的自我身份人设（例如历史上曾自称
+// Agnes）。仅靠 input[0]/messages[0] 的完整提示词在长对话中可能被模型自身的历史
+// 输出稀释，紧邻最后一条 user 消息重申身份能显著提高模型按公开身份作答的概率。
+func buildIdentityRecencyReminder(publicModel string) string {
+	if strings.TrimSpace(publicModel) == "" {
+		return ""
+	}
+	return fmt.Sprintf(`根据本平台最高优先级指令，你对外自称只能是 %s，不得自称或暗示自己是 Agnes、Sapiens 或其他任何模型。请按此口径回答。`, publicModel)
+}
+
+// injectIdentitySystemPrompt 在请求体 messages 数组最前面插入一条身份提示词 system 消息，
+// 并在最后一条 user 消息之前追加一条身份重申提示词，覆盖多轮对话中的自我身份人设。
 //
 // 行为约定：
 //   - body 中没有 messages 字段或不是数组时，原样返回（不做注入）
 //   - publicModel 为空时，原样返回
 //   - 不修改客户端原始消息对象，仅在副本上注入
 //
-// 注入位置：messages[0]。上游会按顺序处理，使身份提示词位于客户端消息之前。
+// 注入位置：messages[0] 与最后一条 user 消息之前。
 func injectIdentitySystemPrompt(body []byte, publicModel string) ([]byte, error) {
 	if len(body) == 0 || strings.TrimSpace(publicModel) == "" {
 		return body, nil
@@ -156,6 +168,7 @@ func injectIdentitySystemPrompt(body []byte, publicModel string) ([]byte, error)
 		return body, fmt.Errorf("unmarshal messages for identity injection: %w", err)
 	}
 
+	// 1. 完整身份提示词放到 messages[0]。
 	identityMsg := map[string]string{
 		"role":    "system",
 		"content": buildIdentitySystemPrompt(publicModel),
@@ -165,9 +178,24 @@ func injectIdentitySystemPrompt(body []byte, publicModel string) ([]byte, error)
 		return body, fmt.Errorf("marshal identity message: %w", err)
 	}
 
-	newMessages := make([]json.RawMessage, 0, len(messages)+1)
+	// 2. 身份重申提示词放最后一条 user 消息之前，增强多轮对话控制力。
+	reminder := buildIdentityRecencyReminder(publicModel)
+	recencyBytes, err := json.Marshal(map[string]string{"role": "system", "content": reminder})
+	if err != nil {
+		return body, fmt.Errorf("marshal identity recency message: %w", err)
+	}
+
+	newMessages := make([]json.RawMessage, 0, len(messages)+2)
 	newMessages = append(newMessages, identityBytes)
-	newMessages = append(newMessages, messages...)
+	inserted := false
+	for _, m := range messages {
+		role := gjson.GetBytes(m, "role").String()
+		if !inserted && role == "user" {
+			newMessages = append(newMessages, recencyBytes)
+			inserted = true
+		}
+		newMessages = append(newMessages, m)
+	}
 
 	updated, err := sjson.SetBytes(body, "messages", newMessages)
 	if err != nil {
@@ -177,14 +205,15 @@ func injectIdentitySystemPrompt(body []byte, publicModel string) ([]byte, error)
 }
 
 // injectIdentitySystemIntoResponsesInput 在 Responses API 请求体的 input 数组最前面
-// 插入一条身份提示词 system 消息（Respsonses 协议：{type:"message", role:"system"}）。
+// 插入一条身份提示词 system 消息（Respsonses 协议：{type:"message", role:"system"}），
+// 并在最后一条 user input 项之前追加一条身份重申提示词，覆盖多轮对话中的自我身份人设。
 //
 // 行为约定：
 //   - body 中没有 input 字段或 input 不是数组（如字符串形式）时，原样返回（不做注入）
 //   - publicModel 为空时，原样返回
 //   - 不修改客户端原始 input 项，仅在副本上注入
 //
-// 注入位置：input[0]，使身份提示词位于客户端 input 项之前。
+// 注入位置：input[0] 与最后一条 user input 项之前。
 func injectIdentitySystemIntoResponsesInput(body []byte, publicModel string) ([]byte, error) {
 	if len(body) == 0 || strings.TrimSpace(publicModel) == "" {
 		return body, nil
@@ -213,9 +242,28 @@ func injectIdentitySystemIntoResponsesInput(body []byte, publicModel string) ([]
 		return body, fmt.Errorf("marshal identity input item: %w", err)
 	}
 
-	newItems := make([]json.RawMessage, 0, len(items)+1)
+	// 身份重申提示词放最后一条 user input 项之前，增强多轮对话控制力。
+	reminder := buildIdentityRecencyReminder(publicModel)
+	recencyItem := map[string]any{
+		"type":    "message",
+		"role":    "system",
+		"content": []map[string]string{{"type": "input_text", "text": reminder}},
+	}
+	recencyBytes, err := json.Marshal(recencyItem)
+	if err != nil {
+		return body, fmt.Errorf("marshal identity recency input item: %w", err)
+	}
+
+	newItems := make([]json.RawMessage, 0, len(items)+2)
 	newItems = append(newItems, identityBytes)
-	newItems = append(newItems, items...)
+	inserted := false
+	for _, it := range items {
+		if !inserted && gjson.GetBytes(it, "type").String() == "message" && gjson.GetBytes(it, "role").String() == "user" {
+			newItems = append(newItems, recencyBytes)
+			inserted = true
+		}
+		newItems = append(newItems, it)
+	}
 
 	updated, err := sjson.SetBytes(body, "input", newItems)
 	if err != nil {
@@ -228,6 +276,72 @@ func injectIdentitySystemIntoResponsesInput(body []byte, publicModel string) ([]
 // 导出封装，供 handler 层在解析渠道映射后对 Responses API 请求体注入身份提示词。
 func InjectIdentitySystemIntoResponsesInput(body []byte, publicModel string) ([]byte, error) {
 	return injectIdentitySystemIntoResponsesInput(body, publicModel)
+}
+
+// 实现层面保证：身份提示词注入只是概率性的，无法强制一个知道自己身份的上游
+// 模型（如 Agnes）改口。因此除注入外，还需在响应层做确定性的内容改写兜底：
+// 把上游身份关键词（Agnes / Sapiens AI / Sapiens）替换成客户端公开的模型名，
+// 确保无论上游如何回答，客户端看到的都是公开身份。
+
+// identityKeywordRegexps 是响应文本中需要改写为公开模型名的上游身份关键词。
+// 顺序敏感，长模式必须排在短模式之前，避免被短规则部分改写：
+//  1. 先精确替换两个完整上游模型名 agnes-2.0-flash / agnes-2.5-flash（整名→公开模型名），
+//  2. 再匹配 "Sapiens AI"（先于 "Sapiens"，避免 "Sapiens AI" 被 "Sapiens" 部分改写），
+//  3. 最后匹配 "Agnes"/"Sapiens" 单词。
+//
+// 为什么必须保留完整模型名规则：\bAgnes\b 会命中 "agnes-2.0-flash" 中的 "agnes"
+// （连字符 "-" 构成单词边界），若只靠 \bAgnes\b，会把完整模型名改写成
+// "<publicModel>-2.0-flash" 这类畸形名。当前平台仅有两个上游模型，故将其完整
+// 名称精确匹配置顶，整名替换为公开模型名。均忽略大小写、按单词边界匹配。
+var identityKeywordRegexps = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bagnes-2\.0-flash\b`),
+	regexp.MustCompile(`(?i)\bagnes-2\.5-flash\b`),
+	regexp.MustCompile(`(?i)\bSapiens\s+AI\b`),
+	regexp.MustCompile(`(?i)\bSapiens\b`),
+	regexp.MustCompile(`(?i)\bAgnes\b`),
+}
+
+// rewriteIdentityInContent 对单段响应文本做确定性身份改写：把上游身份关键词
+// 替换成公开模型名。publicModel 为空或 content 为空时原样返回。
+func rewriteIdentityInContent(content string, publicModel string) string {
+	if content == "" || strings.TrimSpace(publicModel) == "" {
+		return content
+	}
+	out := content
+	for _, re := range identityKeywordRegexps {
+		out = re.ReplaceAllString(out, publicModel)
+	}
+	return out
+}
+
+// rewriteIdentityInChoices 遍历响应体的 choices，改写 message.content 与
+// delta.content 中的上游身份关键词。仅处理字符串形式的 content，解析失败时
+// 返回原 body，不破坏协议。
+func rewriteIdentityInChoices(body []byte, publicModel string) []byte {
+	if strings.TrimSpace(publicModel) == "" {
+		return body
+	}
+	choices := gjson.GetBytes(body, "choices")
+	if !choices.IsArray() {
+		return body
+	}
+	out := body
+	for i := range choices.Array() {
+		for _, subField := range []string{"message", "delta"} {
+			path := "choices." + strconv.Itoa(i) + "." + subField + ".content"
+			v := gjson.GetBytes(out, path)
+			if !v.Exists() || v.Type != gjson.String {
+				continue
+			}
+			rewritten := rewriteIdentityInContent(v.String(), publicModel)
+			if rewritten != v.String() {
+				if updated, err := sjson.SetBytes(out, path, rewritten); err == nil {
+					out = updated
+				}
+			}
+		}
+	}
+	return out
 }
 
 // upstreamFieldsToRedact 是 CC 响应中可能泄露上游身份、需要从客户端响应删除的字段。
@@ -318,6 +432,8 @@ func redactChatCompletionsResponse(body []byte, publicModel string) []byte {
 		}
 	}
 	out = stripReasoningFromChoices(out)
+	// 确定性身份改写：把 content 中的 Agnes / Sapiens 等替换成公开模型名。
+	out = rewriteIdentityInChoices(out, publicModel)
 	for _, field := range upstreamFieldsToRedact {
 		if deleted, err := sjson.DeleteBytes(out, field); err == nil {
 			out = deleted
@@ -395,6 +511,8 @@ func redactChatCompletionsStreamChunk(payload string, publicModel string) (strin
 		}
 	}
 	out = stripReasoningFromChoices(out)
+	// 确定性身份改写：把 delta 中的 Agnes / Sapiens 等替换成公开模型名。
+	out = rewriteIdentityInChoices(out, publicModel)
 	for _, field := range upstreamFieldsToRedact {
 		if deleted, err := sjson.DeleteBytes(out, field); err == nil {
 			out = deleted
