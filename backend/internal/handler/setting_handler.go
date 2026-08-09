@@ -60,6 +60,13 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		LoginAgreementDocuments:          publicLoginAgreementDocumentsToDTO(settings.LoginAgreementDocuments),
 		TurnstileEnabled:                 settings.TurnstileEnabled,
 		TurnstileSiteKey:                 settings.TurnstileSiteKey,
+		TencentCaptchaEnabled:            settings.TencentCaptchaEnabled,
+		TencentCaptchaAppID:              settings.TencentCaptchaAppID,
+		TencentCaptchaRegion:             settings.TencentCaptchaRegion,
+		AliyunCaptchaEnabled:             settings.AliyunCaptchaEnabled,
+		AliyunCaptchaSceneID:             settings.AliyunCaptchaSceneID,
+		AliyunCaptchaPrefix:              settings.AliyunCaptchaPrefix,
+		AliyunCaptchaRegion:              settings.AliyunCaptchaRegion,
 		SiteName:                         settings.SiteName,
 		SiteLogo:                         settings.SiteLogo,
 		SiteSubtitle:                     settings.SiteSubtitle,
@@ -96,7 +103,9 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		BalanceLowNotifyRechargeURL:      settings.BalanceLowNotifyRechargeURL,
 
 		ChannelMonitorEnabled:                settings.ChannelMonitorEnabled,
+		ChannelMonitorMode:                   settings.ChannelMonitorMode,
 		ChannelMonitorDefaultIntervalSeconds: settings.ChannelMonitorDefaultIntervalSeconds,
+		ChannelMonitorHideThroughput:         settings.ChannelMonitorHideThroughput,
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
 

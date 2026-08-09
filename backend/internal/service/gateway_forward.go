@@ -92,6 +92,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")
 	}
+	beginUpstreamResponseModelObservation(c)
 
 	// 诊断日志：thinking 链路追踪。
 	// 仅在 GATEWAY_THINKING_DEBUG=true 时输出完整阶段日志；上游错误时无论开关
@@ -915,6 +916,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					ResponseBody: body,
 				}
 			}
+			// 流中断（缺失 terminal 事件、读错误、数据间隔超时等）时保留已观测到的
+			// usage 与错误一起返回，handler 在错误处理完成后照常提交 usage 记录。
+			if partial := partialStreamUsageResult(c, resp, streamResult, originalModel, mappedModel, startTime, err); partial != nil {
+				return partial, err
+			}
 			return nil, err
 		}
 		usage = streamResult.usage
@@ -928,14 +934,16 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}
 
 	return &ForwardResult{
-		RequestID:        resp.Header.Get("x-request-id"),
-		Usage:            *usage,
-		Model:            originalModel, // 使用原始模型用于计费和日志
-		UpstreamModel:    mappedModel,
-		Stream:           reqStream,
-		Duration:         time.Since(startTime),
-		FirstTokenMs:     firstTokenMs,
-		ClientDisconnect: clientDisconnect,
+		RequestID:                     resp.Header.Get("x-request-id"),
+		Usage:                         *usage,
+		Model:                         originalModel, // 使用原始模型用于计费和日志
+		UpstreamModel:                 mappedModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		Stream:                        reqStream,
+		Duration:                      time.Since(startTime),
+		FirstTokenMs:                  firstTokenMs,
+		ClientDisconnect:              clientDisconnect,
 	}, nil
 }
 

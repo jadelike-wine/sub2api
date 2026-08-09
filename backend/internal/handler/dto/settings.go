@@ -56,11 +56,23 @@ type SystemSettings struct {
 	SMTPFromName           string `json:"smtp_from_name"`
 	SMTPUseTLS             bool   `json:"smtp_use_tls"`
 
-	TurnstileEnabled             bool     `json:"turnstile_enabled"`
-	TurnstileSiteKey             string   `json:"turnstile_site_key"`
-	TurnstileSecretKeyConfigured bool     `json:"turnstile_secret_key_configured"`
-	APIKeyACLTrustForwardedIP    bool     `json:"api_key_acl_trust_forwarded_ip"`
-	ForwardedClientIPHeaders     []string `json:"forwarded_client_ip_headers"`
+	TurnstileEnabled                       bool     `json:"turnstile_enabled"`
+	TurnstileSiteKey                       string   `json:"turnstile_site_key"`
+	TurnstileSecretKeyConfigured           bool     `json:"turnstile_secret_key_configured"`
+	TencentCaptchaEnabled                  bool     `json:"tencent_captcha_enabled"`
+	TencentCaptchaAppID                    string   `json:"tencent_captcha_app_id"`
+	TencentCaptchaAppSecretKeyConfigured   bool     `json:"tencent_captcha_app_secret_key_configured"`
+	TencentCaptchaCloudSecretIDConfigured  bool     `json:"tencent_captcha_cloud_secret_id_configured"`
+	TencentCaptchaCloudSecretKeyConfigured bool     `json:"tencent_captcha_cloud_secret_key_configured"`
+	TencentCaptchaRegion                   string   `json:"tencent_captcha_region"`
+	AliyunCaptchaEnabled                   bool     `json:"aliyun_captcha_enabled"`
+	AliyunCaptchaAccessKeyID               string   `json:"aliyun_captcha_access_key_id"`
+	AliyunCaptchaAccessKeySecretConfigured bool     `json:"aliyun_captcha_access_key_secret_configured"`
+	AliyunCaptchaSceneID                   string   `json:"aliyun_captcha_scene_id"`
+	AliyunCaptchaPrefix                    string   `json:"aliyun_captcha_prefix"`
+	AliyunCaptchaRegion                    string   `json:"aliyun_captcha_region"`
+	APIKeyACLTrustForwardedIP              bool     `json:"api_key_acl_trust_forwarded_ip"`
+	ForwardedClientIPHeaders               []string `json:"forwarded_client_ip_headers"`
 
 	LinuxDoConnectEnabled                bool   `json:"linuxdo_connect_enabled"`
 	LinuxDoConnectClientID               string `json:"linuxdo_connect_client_id"`
@@ -199,6 +211,9 @@ type SystemSettings struct {
 	EnableClientDatelineNormalization      bool   `json:"enable_client_dateline_normalization"`
 	AntigravityUserAgentVersion            string `json:"antigravity_user_agent_version"`
 	OpenAICodexUserAgent                   string `json:"openai_codex_user_agent"`
+	OpenAICodexClientVersion               string `json:"openai_codex_client_version"`
+	OpenAICodexClientVersionSynced         string `json:"openai_codex_client_version_synced"`
+	OpenAICodexVersionAutoSyncEnabled      bool   `json:"openai_codex_version_auto_sync_enabled"`
 
 	// codex_cli_only 加固
 	MinCodexVersion                      string `json:"min_codex_version"`
@@ -285,8 +300,15 @@ type SystemSettings struct {
 	AccountQuotaNotifyEmails        []NotifyEmailEntry `json:"account_quota_notify_emails"`
 
 	// Channel Monitor feature switch
-	ChannelMonitorEnabled                bool `json:"channel_monitor_enabled"`
-	ChannelMonitorDefaultIntervalSeconds int  `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
+	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
+	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorHideThroughput         bool   `json:"channel_monitor_hide_throughput"`
+
+	// Grok model mapping policy (admin settings; empty account mapping falls back to these).
+	GrokDefaultTextModel           string `json:"grok_default_text_model"`
+	GrokCrossClientModelMapEnabled bool   `json:"grok_cross_client_model_map_enabled"`
+	GrokDefaultBaseURLMode         string `json:"grok_default_base_url_mode"`
 
 	// Available Channels feature switch (user-facing aggregate view)
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
@@ -311,6 +333,9 @@ type SystemSettings struct {
 
 	// 系统全局默认平台配额（key = platform，nil/缺省 = 不限制）
 	DefaultPlatformQuotas map[string]*service.DefaultPlatformQuotaSetting `json:"default_platform_quotas,omitempty"`
+
+	// 系统全局账号自动停调阈值（key = platform，100 = disabled）
+	AccountSchedulingThresholds map[string]int `json:"account_scheduling_thresholds,omitempty"`
 
 	// 允许终端用户在用量页查看自己的失败请求
 	AllowUserViewErrorRequests bool `json:"allow_user_view_error_requests"`
@@ -344,6 +369,13 @@ type PublicSettings struct {
 	LoginAgreementDocuments          []LoginAgreementDocument `json:"login_agreement_documents"`
 	TurnstileEnabled                 bool                     `json:"turnstile_enabled"`
 	TurnstileSiteKey                 string                   `json:"turnstile_site_key"`
+	TencentCaptchaEnabled            bool                     `json:"tencent_captcha_enabled"`
+	TencentCaptchaAppID              string                   `json:"tencent_captcha_app_id"`
+	TencentCaptchaRegion             string                   `json:"tencent_captcha_region"`
+	AliyunCaptchaEnabled             bool                     `json:"aliyun_captcha_enabled"`
+	AliyunCaptchaSceneID             string                   `json:"aliyun_captcha_scene_id"`
+	AliyunCaptchaPrefix              string                   `json:"aliyun_captcha_prefix"`
+	AliyunCaptchaRegion              string                   `json:"aliyun_captcha_region"`
 	SiteName                         string                   `json:"site_name"`
 	SiteLogo                         string                   `json:"site_logo"`
 	SiteSubtitle                     string                   `json:"site_subtitle"`
@@ -382,8 +414,10 @@ type PublicSettings struct {
 	BalanceLowNotifyThreshold   float64 `json:"balance_low_notify_threshold"`
 	BalanceLowNotifyRechargeURL string  `json:"balance_low_notify_recharge_url"`
 
-	ChannelMonitorEnabled                bool `json:"channel_monitor_enabled"`
-	ChannelMonitorDefaultIntervalSeconds int  `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorEnabled                bool   `json:"channel_monitor_enabled"`
+	ChannelMonitorMode                   string `json:"channel_monitor_mode"`
+	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
+	ChannelMonitorHideThroughput         bool   `json:"channel_monitor_hide_throughput"`
 
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
 
