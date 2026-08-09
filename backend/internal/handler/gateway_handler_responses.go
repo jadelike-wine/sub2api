@@ -103,6 +103,18 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(requestCtx, apiKey.GroupID, reqModel)
 
+	// 构造 ResolvedModel 并把 PublicModel 放入 gin.Context，供 service 层动态注入
+	// 身份提示词与对客户端响应脱敏（隐藏真实上游模型名）。同时存 UpstreamModel
+	// 供错误消息脱敏使用。校验失败返回标准 model_not_found。
+	resolvedModel := service.BuildResolvedModel(reqModel, channelMapping)
+	if !service.ValidatePublicModel(resolvedModel.PublicModel) {
+		h.responsesErrorResponse(c, http.StatusNotFound, "invalid_request_error",
+			"Model not found: "+reqModel)
+		return
+	}
+	c.Set(service.ContextKeyPublicModel, resolvedModel.PublicModel)
+	c.Set(service.ContextKeyUpstreamModel, resolvedModel.UpstreamModel)
+
 	// Claude Code only restriction:
 	// /v1/responses is never a Claude Code endpoint.
 	// When claude_code_only is enabled, this endpoint is rejected.

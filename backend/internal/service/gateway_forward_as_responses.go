@@ -82,6 +82,14 @@ func (s *GatewayService) ForwardAsResponses(
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, mappedModel)
 	anthropicReq.Model = mappedModel
 
+	// 注入统一身份提示词到 Anthropic system 最前面，隐藏真实上游模型身份。
+	// handler 已把客户端公开模型名注入 gin.Context（ContextKeyPublicModel）。
+	// OAuth 账号会经 applyClaudeCodeOAuthMimicryToBody 重写 system，此处注入会被覆盖，
+	// 且 OAuth 上游即原生 Anthropic，无身份泄露风险，故跳过。
+	if publicModel := getPublicModelFromContext(c); publicModel != "" && account.Type != AccountTypeOAuth {
+		injectIdentitySystemIntoAnthropicRequest(anthropicReq, publicModel)
+	}
+
 	logger.L().Debug("gateway forward_as_responses: model mapping applied",
 		zap.Int64("account_id", account.ID),
 		zap.String("original_model", originalModel),
@@ -194,6 +202,35 @@ func (s *GatewayService) ForwardAsResponses(
 	}
 
 	return result, handleErr
+}
+
+// injectIdentitySystemIntoAnthropicRequest 在 Anthropic 请求的 system 最前面插入身份提示词。
+// system 可能是字符串或 []content block，统一转为 []block 并前置，避免与既有 system 冲突。
+func injectIdentitySystemIntoAnthropicRequest(req *apicompat.AnthropicRequest, publicModel string) {
+	if req == nil {
+		return
+	}
+	prompt := buildIdentitySystemPrompt(publicModel)
+	if prompt == "" {
+		return
+	}
+	identityBlock := apicompat.AnthropicContentBlock{Type: "text", Text: prompt}
+	if len(req.System) == 0 {
+		blocks, _ := json.Marshal([]apicompat.AnthropicContentBlock{identityBlock})
+		req.System = blocks
+		return
+	}
+	var existing []apicompat.AnthropicContentBlock
+	if err := json.Unmarshal(req.System, &existing); err == nil {
+		merged, _ := json.Marshal(append([]apicompat.AnthropicContentBlock{identityBlock}, existing...))
+		req.System = merged
+		return
+	}
+	var existingStr string
+	if err := json.Unmarshal(req.System, &existingStr); err == nil {
+		merged, _ := json.Marshal([]apicompat.AnthropicContentBlock{identityBlock, {Type: "text", Text: existingStr}})
+		req.System = merged
+	}
 }
 
 func adaptResponsesClientToolsForAnthropic(body []byte) ([]byte, apicompat.ResponsesClientToolMapping, error) {

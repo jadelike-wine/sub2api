@@ -375,7 +375,25 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	// 构造 ResolvedModel 并把 PublicModel 放入 gin.Context，供 service 层注入身份提示词
+	// 与对客户端响应脱敏（隐藏真实上游模型名）。同时存 UpstreamModel 供错误消息脱敏使用。
+	resolvedModel := service.BuildResolvedModel(reqModel, channelMapping)
+	// 防御提示词注入：拒绝包含控制字符/换行/空格的非法 model 名称，避免恶意字符串被
+	// 拼入身份提示词。校验失败返回标准 model_not_found。
+	if !service.ValidatePublicModel(resolvedModel.PublicModel) {
+		h.errorResponse(c, http.StatusNotFound, "invalid_request_error",
+			"Model not found: "+strings.TrimSpace(reqModel))
+		return
+	}
+	c.Set(service.ContextKeyPublicModel, resolvedModel.PublicModel)
+	c.Set(service.ContextKeyUpstreamModel, resolvedModel.UpstreamModel)
 	forwardBody := openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
+	// 注入统一身份提示词到 Responses API 请求体 input 最前面，隐藏真实上游模型身份。
+	if resolvedModel.PublicModel != "" {
+		if injected, injErr := service.InjectIdentitySystemIntoResponsesInput(forwardBody, resolvedModel.PublicModel); injErr == nil {
+			forwardBody = injected
+		}
+	}
 	seedOpenAIForwardImageIntentHint(c, channelMapping.Mapped, imageIntent)
 
 	// 提前校验 function_call_output 是否具备可关联上下文，避免上游 400。

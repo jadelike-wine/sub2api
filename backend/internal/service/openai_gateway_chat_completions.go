@@ -170,6 +170,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		if err != nil {
 			return nil, fmt.Errorf("normalize service_tier in responses-shape body: %w", err)
 		}
+		// 注入统一身份提示词到 Responses-shape 请求体 input 最前面，隐藏真实上游模型身份。
+		// 与 CC→Responses 主路径一致，仅对 APIKey 账号注入（来源为 forwardAsRawChatCompletions
+		// 已注入场景；此处针对 Cursor 等以 Responses-shape 请求 /v1/chat/completions 的客户端）。
+		if publicModelFromContext != "" && account.Type == AccountTypeAPIKey {
+			if injected, injErr := injectIdentitySystemIntoResponsesInput(responsesBody, publicModelFromContext); injErr == nil {
+				responsesBody = injected
+			}
+		}
 		// Minimal stub populated from the raw body so downstream billing
 		// propagation (ServiceTier, ReasoningEffort) keeps working.
 		responsesReq = &apicompat.ResponsesRequest{
