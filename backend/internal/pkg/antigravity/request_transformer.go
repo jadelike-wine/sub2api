@@ -670,7 +670,7 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 		if req.Temperature != nil {
 			config.Temperature = req.Temperature
 		}
-		if req.TopP != nil {
+		if req.TopP != nil && *req.TopP > 0 && *req.TopP <= 1 {
 			config.TopP = req.TopP
 		}
 		if req.TopK != nil {

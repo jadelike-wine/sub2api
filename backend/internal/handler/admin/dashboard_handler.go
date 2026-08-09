@@ -7,12 +7,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // DashboardHandler handles admin dashboard statistics
@@ -544,6 +546,9 @@ func (h *DashboardHandler) GetUserSpendingRanking(c *gin.Context) {
 
 	ranking, err := h.dashboardService.GetUserSpendingRanking(c.Request.Context(), startTime, endTime, limit)
 	if err != nil {
+		logger.FromContext(c.Request.Context()).Error("failed to get user spending ranking",
+			zap.Error(err),
+		)
 		response.Error(c, 500, "Failed to get user spending ranking")
 		return
 	}

@@ -7602,20 +7602,20 @@
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
             <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-              {{ t('admin.settings.features.dailyCheckin.title') }}
+              {{ t('admin.settings.dailyCheckin.title') }}
             </h2>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              {{ t('admin.settings.features.dailyCheckin.description') }}
+              {{ t('admin.settings.dailyCheckin.description') }}
             </p>
           </div>
           <div class="space-y-5 p-6">
             <div class="flex items-center justify-between">
               <div>
                 <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
-                  {{ t('admin.settings.features.dailyCheckin.enabled') }}
+                  {{ t('admin.settings.dailyCheckin.enabled') }}
                 </label>
                 <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                  {{ t('admin.settings.features.dailyCheckin.enabledHint') }}
+                  {{ t('admin.settings.dailyCheckin.enabledHint') }}
                 </p>
               </div>
               <Toggle v-model="form.daily_checkin_enabled" />
@@ -7625,7 +7625,7 @@
               <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <label class="input-label">
-                    {{ t('admin.settings.features.dailyCheckin.rewardMin') }}
+                    {{ t('admin.settings.dailyCheckin.rewardMin') }}
                   </label>
                   <div class="relative">
                     <input
@@ -7639,13 +7639,13 @@
                     <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
                   </div>
                   <p class="mt-1 text-xs text-gray-400">
-                    {{ t('admin.settings.features.dailyCheckin.rewardMinHint') }}
+                    {{ t('admin.settings.dailyCheckin.rewardMinHint') }}
                   </p>
                 </div>
 
                 <div>
                   <label class="input-label">
-                    {{ t('admin.settings.features.dailyCheckin.rewardMax') }}
+                    {{ t('admin.settings.dailyCheckin.rewardMax') }}
                   </label>
                   <div class="relative">
                     <input
@@ -7659,14 +7659,14 @@
                     <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">$</span>
                   </div>
                   <p class="mt-1 text-xs text-gray-400">
-                    {{ t('admin.settings.features.dailyCheckin.rewardMaxHint') }}
+                    {{ t('admin.settings.dailyCheckin.rewardMaxHint') }}
                   </p>
                 </div>
               </div>
 
               <div>
                 <label class="input-label">
-                  {{ t('admin.settings.features.dailyCheckin.timezone') }}
+                  {{ t('admin.settings.dailyCheckin.timezone') }}
                 </label>
                 <input
                   v-model="form.daily_checkin_timezone"
@@ -7675,7 +7675,7 @@
                   placeholder="Asia/Shanghai"
                 />
                 <p class="mt-1 text-xs text-gray-400">
-                  {{ t('admin.settings.features.dailyCheckin.timezoneHint') }}
+                  {{ t('admin.settings.dailyCheckin.timezoneHint') }}
                 </p>
               </div>
             </div>

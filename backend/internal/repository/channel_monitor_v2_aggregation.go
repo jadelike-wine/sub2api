@@ -8,7 +8,11 @@ import (
 )
 
 // Platform is derived from group/account (usage_logs has no provider column on upstream schema).
-const channelMonitorV2PlatformSQL = `lower(` + usageLogEffectivePlatformExpr + `)`
+// usageLogEffectivePlatformExpr can yield NULL (composite group with NULL account platform,
+// or both group/account platform empty). The 1m fact tables declare platform NOT NULL, so
+// coalesce to 'unknown' — the same fallback channel_monitor_v2 error aggregation already uses
+// (see channelMonitorV2ErrorAggregationSQL) — to keep every INSERT path safe.
+const channelMonitorV2PlatformSQL = `lower(COALESCE(NULLIF(TRIM(` + usageLogEffectivePlatformExpr + `), ''), 'unknown'))`
 const channelMonitorV2ModelSQL = `COALESCE(NULLIF(TRIM(ul.requested_model), ''), NULLIF(TRIM(ul.model), ''), 'unknown')`
 
 // Tiered retention balances UI windows against storage:

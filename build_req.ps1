@@ -1,0 +1,3 @@
+$j = '{"model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"你好"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"你好！我是 Agnes，由 Sapiens AI 开发的语言模型。很高兴见到你！"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"你是谁？"}]}],"stream":false}';
+$b = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($j));
+Write-Output $b

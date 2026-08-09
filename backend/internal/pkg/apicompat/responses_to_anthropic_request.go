@@ -20,7 +20,7 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 		Model:       req.Model,
 		Messages:    messages,
 		Temperature: req.Temperature,
-		TopP:        req.TopP,
+		TopP:        sanitizeTopP(req.TopP),
 		Stream:      req.Stream,
 	}
 

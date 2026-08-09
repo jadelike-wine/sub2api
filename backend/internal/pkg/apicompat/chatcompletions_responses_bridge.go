@@ -35,7 +35,7 @@ func ResponsesToChatCompletionsRequest(req *ResponsesRequest) (*ChatCompletionsR
 		Messages:            messages,
 		MaxCompletionTokens: req.MaxOutputTokens,
 		Temperature:         req.Temperature,
-		TopP:                req.TopP,
+		TopP:                sanitizeTopP(req.TopP),
 		Stream:              req.Stream,
 		ServiceTier:         req.ServiceTier,
 		ParallelToolCalls:   req.ParallelToolCalls,

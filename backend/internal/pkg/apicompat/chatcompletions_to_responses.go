@@ -40,7 +40,7 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 	// See isReasoningModel in anthropic_to_responses.go.
 	if !isReasoningModel(req.Model) {
 		out.Temperature = req.Temperature
-		out.TopP = req.TopP
+		out.TopP = sanitizeTopP(req.TopP)
 	}
 
 	storeFalse := false

@@ -2,15 +2,21 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type dashboardUsageRepoCapture struct {
@@ -25,6 +31,7 @@ type dashboardUsageRepoCapture struct {
 	rankingLimit     int
 	ranking          []usagestats.UserSpendingRankingItem
 	rankingTotal     float64
+	rankingErr       error
 }
 
 func (s *dashboardUsageRepoCapture) GetUsageTrendWithUsageFilters(
@@ -94,6 +101,9 @@ func (s *dashboardUsageRepoCapture) GetUserSpendingRanking(
 	limit int,
 ) (*usagestats.UserSpendingRankingResponse, error) {
 	s.rankingLimit = limit
+	if s.rankingErr != nil {
+		return nil, s.rankingErr
+	}
 	return &usagestats.UserSpendingRankingResponse{
 		Ranking:         s.ranking,
 		TotalActualCost: s.rankingTotal,
@@ -275,4 +285,34 @@ func TestDashboardUsersRankingLimitAndCache(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec2.Code)
 	require.Equal(t, "hit", rec2.Header().Get("X-Snapshot-Cache"))
+}
+
+func TestDashboardUsersRankingErrorStill500AndLogsErr(t *testing.T) {
+	dashboardUsersRankingCache = newSnapshotCache(5 * time.Minute)
+	repo := &dashboardUsageRepoCapture{
+		rankingErr: errors.New("user spending ranking: boom"),
+	}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	core, observedLogs := observer.New(zap.DebugLevel)
+	reqCtx := logger.IntoContext(context.Background(), zap.New(core))
+	req := httptest.NewRequest(http.MethodGet, "/admin/dashboard/users-ranking?start_date=2025-01-01&end_date=2025-01-02", nil).WithContext(reqCtx)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	// Client response must stay a 500 with the original message.
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Contains(t, rec.Body.String(), "Failed to get user spending ranking")
+
+	// Handler must emit an ERROR log carrying the underlying error.
+	entries := observedLogs.FilterMessage("failed to get user spending ranking").All()
+	require.Len(t, entries, 1)
+	require.Equal(t, zapcore.ErrorLevel, entries[0].Level)
+	foundErr := false
+	for _, f := range entries[0].Context {
+		if f.Key == "error" && strings.Contains(f.String, "boom") {
+			foundErr = true
+		}
+	}
+	require.True(t, foundErr, "expected underlying error in log context")
 }

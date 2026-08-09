@@ -34,7 +34,7 @@ func AnthropicToResponses(req *AnthropicRequest) (*ResponsesRequest, error) {
 	// models.
 	if !isReasoningModel(req.Model) {
 		out.Temperature = req.Temperature
-		out.TopP = req.TopP
+		out.TopP = sanitizeTopP(req.TopP)
 	}
 
 	storeFalse := false
@@ -463,6 +463,20 @@ func convertAnthropicToolsToResponses(tools []AnthropicTool) []ResponsesTool {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+// sanitizeTopP returns a top_p value that the upstream API will accept, or
+// nil to fall back to the upstream default.
+//
+// top_p is only valid in the range (0, 1]. A nil pointer is left as nil.
+// Values outside that range — most commonly 0.0, which upstreams reject with
+// a 400 "top_p must be in (0, 1]" — are dropped so the upstream uses its own
+// default rather than failing the whole request.
+func sanitizeTopP(v *float64) *float64 {
+	if v == nil || *v <= 0 || *v > 1 {
+		return nil
+	}
+	return v
 }
 
 // isReasoningModel reports whether model is a reasoning model that does not
