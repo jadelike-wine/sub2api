@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -122,6 +123,127 @@ func TestForwardAsRawChatCompletions_ForcesStreamUsageUpstreamAndPassesUsageDown
 	require.Contains(t, rec.Body.String(), "data: [DONE]")
 }
 
+func TestForwardAsChatCompletions_OpenAICompatibleGrokRawMissingUsageFailsBeforeWrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+			"X-Request-Id": []string{"rid-openai-compat-grok-no-usage"},
+		},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"resp_missing_usage","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+		)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := rawChatCompletionsTestAccount()
+	account.Name = "openai-compatible-grok"
+	account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: false}
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.False(t, c.Writer.Written(), "unbilled Grok content must not be returned by an OpenAI-compatible account")
+	require.Empty(t, recorder.Body.String())
+}
+
+func TestForwardAsChatCompletions_OpenAICompatibleRawUsageGuard(t *testing.T) {
+	tests := []struct {
+		name             string
+		model            string
+		upstreamResponse string
+		modelMapping     map[string]any
+		wantGuarded      bool
+	}{
+		{
+			name:             "Grok response without usage",
+			model:            "grok-4.5",
+			upstreamResponse: `{"id":"resp_missing","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+			wantGuarded:      true,
+		},
+		{
+			name:             "namespaced Grok response without usage",
+			model:            "x-ai/grok-4.5",
+			upstreamResponse: `{"id":"resp_namespaced","object":"chat.completion","model":"x-ai/grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+			wantGuarded:      true,
+		},
+		{
+			name:             "Grok response with aggregate usage passes",
+			model:            "grok-4.5",
+			upstreamResponse: `{"id":"resp_usage","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12}}`,
+			wantGuarded:      false,
+		},
+		{
+			name:             "Grok alias mapped to non-Grok remains unchanged",
+			model:            "grok-alias",
+			upstreamResponse: `{"id":"resp_mapped","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+			modelMapping:     map[string]any{"grok-alias": "gpt-5.4"},
+			wantGuarded:      false,
+		},
+		{
+			name:             "Grok response with detail-only usage",
+			model:            "grok-4.5",
+			upstreamResponse: `{"id":"resp_detail_only","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"input_tokens_details":{"text_tokens":9,"image_tokens":2},"output_tokens_details":{"image_tokens":1}}}`,
+			wantGuarded:      true,
+		},
+		{
+			name:             "non-Grok response without usage remains unchanged",
+			model:            "gpt-5.4",
+			upstreamResponse: `{"id":"resp_openai","object":"chat.completion","model":"gpt-5.4","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`,
+			wantGuarded:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			body := []byte(`{"model":"` + tt.model + `","messages":[{"role":"user","content":"hello"}],"stream":false}`)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}, "X-Request-Id": []string{"rid-openai-compatible"}},
+				Body:       io.NopCloser(strings.NewReader(tt.upstreamResponse)),
+			}}
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+			account := rawChatCompletionsTestAccount()
+			account.Name = "openai-compatible"
+			account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: false}
+			if tt.modelMapping != nil {
+				account.Credentials["model_mapping"] = tt.modelMapping
+			}
+
+			result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+
+			if !tt.wantGuarded {
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.True(t, c.Writer.Written())
+				return
+			}
+			require.Nil(t, result)
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+			require.Equal(t, "grok_missing_usage", gjson.GetBytes(failoverErr.ResponseBody, "error.code").String())
+			require.False(t, c.Writer.Written(), "unbilled Grok content must not be returned")
+		})
+	}
+}
+
 func TestForwardAsRawChatCompletions_PreservesMappedGPT56MaxEffort(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -206,7 +328,7 @@ func TestForwardAsRawChatCompletions_NonStreamingCapturesCacheWriteUsage(t *test
 	}
 }
 
-func TestForwardAsRawChatCompletions_StripsDeepSeekReasoningContentNonStreaming(t *testing.T) {
+func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentNonStreaming(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-reasoner","messages":[{"role":"user","content":"hello"}],"stream":false}`)
@@ -233,14 +355,11 @@ func TestForwardAsRawChatCompletions_StripsDeepSeekReasoningContentNonStreaming(
 	require.NotNil(t, result)
 	require.Equal(t, 3, result.Usage.InputTokens)
 	require.Equal(t, 5, result.Usage.OutputTokens)
-	// 普通 C 端策略：reasoning_content 必须从客户端响应中剥离，即便上游是 deepseek-reasoner。
-	// 上游在多轮对话中需要的 reasoning 回放由请求层透传实现（见 TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentInRequest）。
-	require.False(t, gjson.Get(rec.Body.String(), "choices.0.message.reasoning_content").Exists(), "reasoning_content must not appear in client response")
-	require.NotContains(t, rec.Body.String(), "think first")
+	require.Equal(t, "think first", gjson.Get(rec.Body.String(), "choices.0.message.reasoning_content").String())
 	require.Equal(t, "final answer", gjson.Get(rec.Body.String(), "choices.0.message.content").String())
 }
 
-func TestForwardAsRawChatCompletions_StripsDeepSeekReasoningContentStreaming(t *testing.T) {
+func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentStreaming(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-reasoner","messages":[{"role":"user","content":"hello"}],"stream":true}`)
@@ -278,10 +397,7 @@ func TestForwardAsRawChatCompletions_StripsDeepSeekReasoningContentStreaming(t *
 	require.NotNil(t, result)
 	require.Equal(t, 3, result.Usage.InputTokens)
 	require.Equal(t, 5, result.Usage.OutputTokens)
-	// 普通 C 端策略：reasoning_content 必须从客户端响应中剥离，即便上游是 deepseek-reasoner。
-	// reasoning-only chunk 删除后无有效载荷，会被 drop（不透传给客户端）。
-	require.NotContains(t, rec.Body.String(), `"reasoning_content":"think first"`)
-	require.NotContains(t, rec.Body.String(), "think first")
+	require.Contains(t, rec.Body.String(), `"reasoning_content":"think first"`)
 	require.Contains(t, rec.Body.String(), `"content":"final answer"`)
 	require.Contains(t, rec.Body.String(), "data: [DONE]")
 }
@@ -312,69 +428,6 @@ func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentInRequest(
 	require.NotNil(t, result)
 	require.Equal(t, "need tool", gjson.GetBytes(upstream.lastBody, "messages.1.reasoning_content").String())
 	require.Equal(t, "get_weather", gjson.GetBytes(upstream.lastBody, "messages.1.tool_calls.0.function.name").String())
-}
-
-// TestForwardAsRawChatCompletions_AgnesProviderThinkingNormalizationDecoupledFromImageAdapter
-// 验证 Agnes Thinking 规范化与图片适配器解耦：
-// 仅声明 agnes_provider=true（未启用图片适配器）的纯文本 Agnes 账号也必须执行
-// Thinking 规范化，客户端无法通过 chat_template_kwargs.enable_thinking=true / include_reasoning=true
-// / expose_reasoning=true / 顶层 thinking / reasoning_effort 等字段绕过服务端策略。
-func TestForwardAsRawChatCompletions_AgnesProviderThinkingNormalizationDecoupledFromImageAdapter(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	// 客户端尝试多个绕过字段
-	body := []byte(`{"model":"agnes-2.0-flash","messages":[{"role":"user","content":"hi"}],"chat_template_kwargs":{"enable_thinking":true},"include_reasoning":true,"return_reasoning":true,"expose_reasoning":true,"reasoning_effort":"high","thinking":{"type":"enabled"},"stream":false}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_agnes_provider_decoupled"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_agnes_provider","object":"chat.completion","model":"agnes-2.0-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`)),
-	}}
-
-	cfg := rawChatCompletionsTestConfig()
-	cfg.AgnesChat.Thinking = config.AgnesThinkingConfig{
-		Mode:            AgnesThinkingModeDisabled, // 服务端策略：强制关闭
-		ExposeReasoning: false,
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          cfg,
-		httpUpstream: upstream,
-	}
-	// 关键：仅声明 agnes_provider=true，不启用图片适配器
-	account := &Account{
-		ID:          301,
-		Name:        "agnes-text-only",
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
-		Concurrency: 1,
-		Credentials: map[string]any{
-			"api_key":  "sk-agnes-test",
-			"base_url": "http://upstream.example",
-		},
-		Extra: map[string]any{
-			ExtraKeyAgnesProvider:         true,  // Agnes 账号
-			ExtraKeyAgnesChatImageAdapter: false, // 图片适配关闭
-		},
-	}
-
-	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// Thinking 规范化已执行：服务端覆盖 enable_thinking=false（disabled 模式）
-	require.True(t, gjson.GetBytes(upstream.lastBody, "chat_template_kwargs.enable_thinking").Exists(), "enable_thinking must be set by server")
-	require.False(t, gjson.GetBytes(upstream.lastBody, "chat_template_kwargs.enable_thinking").Bool(), "disabled mode must force enable_thinking=false")
-
-	// 客户端绕过字段必须被剥离
-	require.False(t, gjson.GetBytes(upstream.lastBody, "include_reasoning").Exists(), "include_reasoning must be stripped")
-	require.False(t, gjson.GetBytes(upstream.lastBody, "return_reasoning").Exists(), "return_reasoning must be stripped")
-	require.False(t, gjson.GetBytes(upstream.lastBody, "expose_reasoning").Exists(), "expose_reasoning must be stripped")
-	require.False(t, gjson.GetBytes(upstream.lastBody, "reasoning_effort").Exists(), "reasoning_effort must be stripped")
-	require.False(t, gjson.GetBytes(upstream.lastBody, "thinking").Exists(), "top-level thinking must be stripped")
 }
 
 func TestForwardAsRawChatCompletions_NormalizesGLMReasoningEffortForUpstream(t *testing.T) {
@@ -513,12 +566,7 @@ func TestHandleChatStreamingResponse_SilentRefusalReasoningSummaryExempt(t *test
 	)
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	// Point 4 安全策略：reasoning_content 在 C 端边界无条件剥离。
-	// silent refusal 检测器在脱敏前已通过 ObserveChatChunk 观察 chunk，
-	// sawReasoning=true 仍正确设置，因此不会触发 failover（require.NoError 验证此点）。
-	// 客户端输出不得包含 reasoning_content 字段或其文本。
-	require.NotContains(t, rec.Body.String(), `"reasoning_content"`)
-	require.NotContains(t, rec.Body.String(), "thinking only")
+	require.Contains(t, rec.Body.String(), `"reasoning_content":"thinking only"`)
 	require.Contains(t, rec.Body.String(), "data: [DONE]")
 }
 
@@ -686,230 +734,6 @@ func TestIsOpenAIChatUsageOnlyStreamChunk(t *testing.T) {
 	require.False(t, isOpenAIChatUsageOnlyStreamChunk(``))
 }
 
-// TestForwardAsRawChatCompletions_DeepSeekV4AutoThinkingConvertedToAdaptive 验证
-// OpenAI CC 直转路径在 DeepSeek V4 模型下将 thinking.type=auto 转换为 adaptive，
-// 避免上游 400 "thinking.type must be one of: enabled, disabled, adaptive; got \"auto\""。
-func TestForwardAsRawChatCompletions_DeepSeekV4AutoThinkingConvertedToAdaptive(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	body := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"auto","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_ds_v4_adaptive"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_ds_v4","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
-	}}
-
-	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
-		httpUpstream: upstream,
-	}
-	account := rawChatCompletionsTestAccount()
-
-	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// 上游收到的 thinking.type 应为 adaptive，且不应包含 budget_tokens。
-	require.Equal(t, "adaptive", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
-		"auto 应被转换为 adaptive")
-	require.False(t, gjson.GetBytes(upstream.lastBody, "thinking.budget_tokens").Exists(),
-		"auto→adaptive 后不应携带 budget_tokens")
-}
-
-// TestForwardAsRawChatCompletions_DeepSeekV4OutputConfigEffortConvertedToReasoningEffort
-// 验证 OpenAI CC 直转路径在 DeepSeek V4 模型下将 output_config.effort 转换为顶层 reasoning_effort。
-func TestForwardAsRawChatCompletions_DeepSeekV4OutputConfigEffortConvertedToReasoningEffort(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	body := []byte(`{"model":"deepseek-v4-pro","output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_ds_v4_effort"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_ds_v4_effort","object":"chat.completion","model":"deepseek-v4-pro","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
-	}}
-
-	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
-		httpUpstream: upstream,
-	}
-	account := rawChatCompletionsTestAccount()
-
-	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	require.Equal(t, "high", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String(),
-		"output_config.effort 应被转换为顶层 reasoning_effort")
-	require.False(t, gjson.GetBytes(upstream.lastBody, "output_config").Exists(),
-		"转换后应删除 output_config 字段")
-}
-
-// TestForwardAsRawChatCompletions_DeepSeekV4NoThinkingFieldStaysAbsent 验证
-// OpenAI CC 直转路径在 DeepSeek V4 模型下未传 thinking 时不生成空字段。
-func TestForwardAsRawChatCompletions_DeepSeekV4NoThinkingFieldStaysAbsent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	body := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_ds_v4_no_thinking"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_ds_v4_no_thinking","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
-	}}
-
-	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
-		httpUpstream: upstream,
-	}
-	account := rawChatCompletionsTestAccount()
-
-	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	require.False(t, gjson.GetBytes(upstream.lastBody, "thinking").Exists(),
-		"未传 thinking 时不应自动生成字段")
-}
-
-// TestForwardAsRawChatCompletions_NonDeepSeekV4DoesNotConvertThinking 验证
-// 非 DeepSeek V4 模型不受 thinking 适配影响（回归测试）。
-func TestForwardAsRawChatCompletions_NonDeepSeekV4DoesNotConvertThinking(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	body := []byte(`{"model":"deepseek-reasoner","thinking":{"type":"adaptive"},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_non_ds_v4"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_non_ds_v4","object":"chat.completion","model":"deepseek-reasoner","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
-	}}
-
-	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
-		httpUpstream: upstream,
-	}
-	account := rawChatCompletionsTestAccount()
-
-	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// 非 DeepSeek V4 模型的 thinking.type 应原样保留（不做转换）。
-	require.Equal(t, "adaptive", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
-		"非 DeepSeek V4 模型不应触发 thinking 适配")
-}
-
-// TestForwardAsRawChatCompletions_SenseNovaAdaptiveConvertedToAuto 验证
-// OpenAI CC 直转路径在 SenseNova 上游下将 thinking.type=adaptive 转换为 auto，
-// 避免 SenseNova 返回 400 "'type' must be in [\"enabled\", \"disabled\", \"auto\"]"。
-func TestForwardAsRawChatCompletions_SenseNovaAdaptiveConvertedToAuto(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	body := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"adaptive","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_sensenova"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_sensenova","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
-	}}
-
-	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
-		httpUpstream: upstream,
-	}
-	// SenseNova 上游账号
-	account := &Account{
-		ID:          201,
-		Name:        "sensenova-openai-apikey",
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
-		Concurrency: 1,
-		Credentials: map[string]any{
-			"api_key":  "sensenova-key",
-			"base_url": "https://token.sensenova.cn",
-		},
-		Status:      StatusActive,
-		Schedulable: true,
-	}
-
-	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// 上游收到的 thinking.type 应为 auto（adaptive → auto），且不应包含 budget_tokens。
-	require.Equal(t, "auto", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
-		"SenseNova: adaptive 应被转换为 auto")
-	require.False(t, gjson.GetBytes(upstream.lastBody, "thinking.budget_tokens").Exists(),
-		"SenseNova: adaptive→auto 后不应携带 budget_tokens")
-}
-
-// TestForwardAsRawChatCompletions_SenseNovaEnabledPreservesBudgetTokens 验证
-// OpenAI CC 直转路径在 SenseNova 上游下保留 thinking.type=enabled + budget_tokens。
-func TestForwardAsRawChatCompletions_SenseNovaEnabledPreservesBudgetTokens(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	body := []byte(`{"model":"deepseek-v4-flash","thinking":{"type":"enabled","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}],"stream":false}`)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", "application/json")
-
-	upstream := &httpUpstreamRecorder{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_sensenova_enabled"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_sensenova_en","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
-	}}
-
-	svc := &OpenAIGatewayService{
-		cfg:          rawChatCompletionsTestConfig(),
-		httpUpstream: upstream,
-	}
-	account := &Account{
-		ID:          201,
-		Name:        "sensenova-openai-apikey",
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
-		Concurrency: 1,
-		Credentials: map[string]any{
-			"api_key":  "sensenova-key",
-			"base_url": "https://token.sensenova.cn",
-		},
-		Status:      StatusActive,
-		Schedulable: true,
-	}
-
-	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	require.Equal(t, "enabled", gjson.GetBytes(upstream.lastBody, "thinking.type").String(),
-		"SenseNova: enabled 应保持不变")
-	require.Equal(t, int64(10000), gjson.GetBytes(upstream.lastBody, "thinking.budget_tokens").Int(),
-		"SenseNova: enabled 模式应保留 budget_tokens")
-}
-
 func TestEnsureOpenAIChatStreamUsage(t *testing.T) {
 	t.Parallel()
 
@@ -936,7 +760,7 @@ func TestBufferRawChatCompletions_RejectsOversizedResponse(t *testing.T) {
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
 	svc.cfg.Gateway.UpstreamResponseReadMaxBytes = 3
 
-	result, err := svc.bufferRawChatCompletions(c, resp, nil, "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now())
+	result, err := svc.bufferRawChatCompletions(c, resp, rawChatCompletionsTestAccount(), "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now())
 	require.ErrorIs(t, err, ErrUpstreamResponseBodyTooLarge)
 	require.Nil(t, result)
 	require.Equal(t, http.StatusBadGateway, rec.Code)

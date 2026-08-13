@@ -1,14 +1,16 @@
 package service
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -21,7 +23,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
 const (
@@ -29,19 +30,23 @@ const (
 	settingKeyBackupSchedule = "backup_schedule"
 	settingKeyBackupRecords  = "backup_records"
 
-	maxBackupRecords = 100
+	maxBackupRecords           = 100
+	backupObjectCleanupTimeout = 2 * time.Minute
 
-	// AgnesChatPrefix 是 Agnes 多模态聊天图片在公共对象存储中的 key 前缀。
-	// 与数据库备份（Prefix 字段控制，默认 "backups"）隔离，避免互相覆盖。
-	AgnesChatPrefix = "agnes-chat"
-
-	// ImageGenerationPrefix 是 AI 生图资产在公共对象存储中的 key 前缀。
-	// 与 Agnes 聊天图片（agnes-chat/）和数据库备份（backups/）隔离。
-	ImageGenerationPrefix = "image-generation"
-
-	// backupProbeTimeout 是 PublicBaseURL backups/ 公开性探测的单次 HTTP 超时。
-	// 短超时避免阻塞保存操作；CDN 不可达时 fail-closed 拒绝保存。
-	backupProbeTimeout = 5 * time.Second
+	// backupScheduledLeaderLockKey gates the scheduled full-database backup so
+	// that only one instance in a clustered deployment performs the
+	// dump-and-upload each cycle. Without it every instance runs the cron
+	// independently, producing N concurrent pg_dumps against the same database,
+	// N× peak memory while the archive is uploaded, and N identical objects that
+	// overwrite the same timestamped key. Every other periodic job in this
+	// package is already gated the same way; the scheduled backup was the last
+	// one that still fanned out across every instance.
+	backupScheduledLeaderLockKey = "backup:scheduled:leader"
+	// backupScheduledLeaderLockTTL bounds crash recovery only; the lock is
+	// released as soon as the backup finishes. It must exceed the job's
+	// worst-case runtime (the scheduled backup context is bounded at 30m) so the
+	// lock cannot expire mid-dump and let a peer start a second backup.
+	backupScheduledLeaderLockTTL = 35 * time.Minute
 )
 
 var (
@@ -51,20 +56,6 @@ var (
 	ErrRestoreInProgress     = infraerrors.Conflict("RESTORE_IN_PROGRESS", "a restore is already in progress")
 	ErrBackupRecordsCorrupt  = infraerrors.InternalServer("BACKUP_RECORDS_CORRUPT", "backup records data is corrupted")
 	ErrBackupS3ConfigCorrupt = infraerrors.InternalServer("BACKUP_S3_CONFIG_CORRUPT", "backup S3 config data is corrupted")
-
-	// ErrBackupPrefixPubliclyReadable 表示 PublicBaseURL 指向的域名允许匿名读取 backups/ 前缀，
-	// 数据库备份将公开暴露。UpdateS3Config 会通过探测拒绝保存此类配置（fail-closed）。
-	// 部署 deploy/cloudflare-worker/r2-access-policy.js 或移除 PublicBaseURL 可解决。
-	ErrBackupPrefixPubliclyReadable = infraerrors.BadRequest("BACKUP_PREFIX_PUBLICLY_READABLE", "backups/ prefix is publicly readable via PublicBaseURL")
-
-	// ErrBucketPrivacyNotAttested 表示管理员未勾选 bucket 私有化承诺。
-	// PublicBaseURL 非空时，管理员必须显式承诺：
-	//   - 已禁用 R2 Public Development URL（*.r2.dev）
-	//   - 已移除或 Worker-protect 所有未受保护的 custom domain
-	//   - bucket 未启用任何公开读策略
-	// 后端无法直接读取 Cloudflare 控制台配置；声明式 AdditionalPublicBaseURLs 也可能漏报。
-	// 此承诺是 HARD 前提，真正可验证的边界由 verify-policy.mjs（Cloudflare API 权威获取）提供。
-	ErrBucketPrivacyNotAttested = infraerrors.BadRequest("BUCKET_PRIVACY_NOT_ATTESTED", "bucket privacy attestation is required when PublicBaseURL is set")
 
 	// ErrSecretEncryptionKeyNotConfigured is returned when an S3 SecretAccessKey
 	// would be encrypted with an auto-generated (ephemeral) key. That key is
@@ -90,6 +81,7 @@ type DBDumper interface {
 // BackupObjectStore abstracts object storage for backup files
 type BackupObjectStore interface {
 	Upload(ctx context.Context, key string, body io.Reader, contentType string) (sizeBytes int64, err error)
+	UploadFile(ctx context.Context, key string, filePath string, contentType string) (sizeBytes int64, err error)
 	Download(ctx context.Context, key string) (io.ReadCloser, error)
 	Delete(ctx context.Context, key string) error
 	PresignURL(ctx context.Context, key string, expiry time.Duration) (string, error)
@@ -99,62 +91,44 @@ type BackupObjectStore interface {
 // BackupObjectStoreFactory creates an object store from S3 config
 type BackupObjectStoreFactory func(ctx context.Context, cfg *BackupS3Config) (BackupObjectStore, error)
 
+// SharedObjectStorageConfigReader exposes the decrypted shared object-storage
+// configuration to image-asset adapters without coupling repository code to the
+// settings table implementation.
+type SharedObjectStorageConfigReader interface {
+	GetSharedObjectStorageConfig(ctx context.Context) (*BackupS3Config, error)
+}
+
+// EnovaImageAssetStorageFactory is supplied by the repository layer to avoid a
+// service-to-repository import cycle.
+type EnovaImageAssetStorageFactory func(EnovaImageAssetStorageConfig) (EnovaImageAssetStorage, error)
+
 // ─── 数据模型 ───
 
-// BackupS3Config 是系统公共对象存储配置（S3 兼容，支持 Cloudflare R2）。
-// 同时用于数据库备份和 Agnes 多模态图片存储。
+// BackupS3Config S3 兼容存储配置（支持 Cloudflare R2）
 type BackupS3Config struct {
-	Endpoint        string `json:"endpoint"` // e.g. https://<account_id>.r2.cloudflarestorage.com
-	Region          string `json:"region"`   // R2 用 "auto"
-	Bucket          string `json:"bucket"`
-	AccessKeyID     string `json:"access_key_id"`
-	SecretAccessKey string `json:"secret_access_key,omitempty"` //nolint:revive // field name follows AWS convention
-	Prefix          string `json:"prefix"` // 数据库备份 key 前缀，如 "backups"（Agnes 图片前缀固定为 AgnesChatPrefix）
-	ForcePathStyle  bool   `json:"force_path_style"`
-	PublicBaseURL   string `json:"public_base_url"` // 公开桶/CDN 域名；Agnes 图片生成 HTTPS 直链时使用
-	// AdditionalPublicBaseURLs 声明该 bucket 的其他公开访问入口（r2.dev Public Development URL、
-	// 其他 custom domain 等）。探测会验证所有这些 URL 同样拒绝 backups/ 前缀的匿名访问。
-	//
-	// ⚠️ 这是 SECONDARY 纵深防御，不是主要安全边界。
-	// 管理员可能漏报公开入口，后端无法发现未声明的域名。真正的强制边界是：
-	//   1. BucketPrivacyAttested（HARD 前提，见下）——管理员书面承诺已私有化 bucket
-	//   2. deploy/cloudflare-worker/verify-policy.mjs——通过 Cloudflare API 权威获取
-	//      r2.dev 状态和 custom domain 列表后逐一探测，不依赖人工声明
-	// 推荐做法：在 Cloudflare 控制台禁用 r2.dev、移除未受 Worker 保护的 custom domain，
-	// 此时此字段留空即可。
+	Endpoint                 string   `json:"endpoint"` // e.g. https://<account_id>.r2.cloudflarestorage.com
+	Region                   string   `json:"region"`   // R2 用 "auto"
+	Bucket                   string   `json:"bucket"`
+	AccessKeyID              string   `json:"access_key_id"`
+	SecretAccessKey          string   `json:"secret_access_key,omitempty"` //nolint:revive // field name follows AWS convention
+	Prefix                   string   `json:"prefix"`                      // S3 key 前缀，如 "backups/"
+	ForcePathStyle           bool     `json:"force_path_style"`
+	PublicBaseURL            string   `json:"public_base_url,omitempty"`
 	AdditionalPublicBaseURLs []string `json:"additional_public_base_urls,omitempty"`
-
-	// BucketPrivacyAttested 是管理员的硬性运维承诺（HARD 前提）：
-	//   - R2 Public Development URL（*.r2.dev）已禁用
-	//   - 所有 custom domain 已移除，或已路由到受 r2-access-policy.js 保护的 Worker
-	//   - bucket 未启用任何公开读策略
-	//   - AdditionalPublicBaseURLs 已完整列出所有剩余公开入口（如有）
-	//
-	// 当 PublicBaseURL 非空时，UpdateS3Config/TestS3Connection 强制要求此字段为 true，
-	// 否则拒绝保存/测试。这是声明式安全机制无法关闭 bucket 级公开风险的弥补：
-	// 后端无法直接读取 Cloudflare 控制台配置，只能依赖管理员书面承诺。
-	//
-	// 真正的可验证边界由 deploy/cloudflare-worker/verify-policy.mjs 提供——
-	// 该脚本通过 Cloudflare API 权威获取所有公开入口并逐一探测，应纳入 CI/定期巡检。
-	BucketPrivacyAttested bool `json:"bucket_privacy_attested,omitempty"`
+	BucketPrivacyAttested    bool     `json:"bucket_privacy_attested,omitempty"`
 }
+
+// AgnesChatPrefix and ImageGenerationPrefix keep image assets isolated from
+// database backups in the shared bucket.
+const (
+	AgnesChatPrefix       = "agnes-chat"
+	ImageGenerationPrefix = "image-generation"
+)
 
 // IsConfigured 检查必要字段是否已配置
 func (c *BackupS3Config) IsConfigured() bool {
 	return c.Bucket != "" && c.AccessKeyID != "" && c.SecretAccessKey != ""
 }
-
-// SharedObjectStorageConfigReader 从数据库读取公共对象存储配置（解密后）。
-// 由 BackupService 实现，供 Agnes 图片存储等模块使用，避免业务代码直接查询 settings 表。
-type SharedObjectStorageConfigReader interface {
-	// GetSharedObjectStorageConfig 返回解密后的公共 S3/R2 配置。
-	// 返回 nil, nil 表示尚未配置（调用方应据此返回明确错误，不静默回退）。
-	GetSharedObjectStorageConfig(ctx context.Context) (*BackupS3Config, error)
-}
-
-// EnovaImageAssetStorageFactory 根据配置构造 EnovaImageAssetStorage。
-// 由 repository 层实现（包装 NewS3EnovaImageAssetStorage），通过 wire 注入到 service 层。
-type EnovaImageAssetStorageFactory func(EnovaImageAssetStorageConfig) (EnovaImageAssetStorage, error)
 
 // BackupScheduleConfig 定时备份配置
 type BackupScheduleConfig struct {
@@ -166,27 +140,35 @@ type BackupScheduleConfig struct {
 
 // BackupRecord 备份记录
 type BackupRecord struct {
-	ID            string `json:"id"`
-	Status        string `json:"status"`      // pending, running, completed, failed
-	BackupType    string `json:"backup_type"` // postgres
-	FileName      string `json:"file_name"`
-	S3Key         string `json:"s3_key"`
-	SizeBytes     int64  `json:"size_bytes"`
-	TriggeredBy   string `json:"triggered_by"` // manual, scheduled
-	ErrorMsg      string `json:"error_message,omitempty"`
-	StartedAt     string `json:"started_at"`
-	FinishedAt    string `json:"finished_at,omitempty"`
-	ExpiresAt     string `json:"expires_at,omitempty"`     // 过期时间
-	Progress      string `json:"progress,omitempty"`       // "dumping", "uploading", ""
-	RestoreStatus string `json:"restore_status,omitempty"` // "", "running", "completed", "failed"
-	RestoreError  string `json:"restore_error,omitempty"`
-	RestoredAt    string `json:"restored_at,omitempty"`
+	ID            string       `json:"id"`
+	Status        string       `json:"status"`      // pending, running, completed, failed
+	BackupType    string       `json:"backup_type"` // postgres
+	FileName      string       `json:"file_name"`
+	S3Key         string       `json:"s3_key"`
+	Parts         []BackupPart `json:"parts,omitempty"`
+	SizeBytes     int64        `json:"size_bytes"`
+	TriggeredBy   string       `json:"triggered_by"` // manual, scheduled
+	ErrorMsg      string       `json:"error_message,omitempty"`
+	StartedAt     string       `json:"started_at"`
+	FinishedAt    string       `json:"finished_at,omitempty"`
+	ExpiresAt     string       `json:"expires_at,omitempty"`     // 过期时间
+	Progress      string       `json:"progress,omitempty"`       // "dumping", "uploading", ""
+	RestoreStatus string       `json:"restore_status,omitempty"` // "", "running", "completed", "failed"
+	RestoreError  string       `json:"restore_error,omitempty"`
+	RestoredAt    string       `json:"restored_at,omitempty"`
 }
 
-// httpProbeDoer 是 backup 前缀公开性探测的 HTTP 客户端抽象。
-// 默认使用 http.DefaultClient；测试中可注入 mock 以验证探测逻辑（避免真实网络）。
-type httpProbeDoer interface {
-	Do(req *http.Request) (*http.Response, error)
+// BackupDownloadPart 描述一个可下载的备份分卷。
+type BackupDownloadPart struct {
+	Index     int    `json:"index"`
+	SizeBytes int64  `json:"size_bytes"`
+	URL       string `json:"url"`
+}
+
+// BackupDownloadResponse 是单文件和分卷下载响应的兼容表示。
+type BackupDownloadResponse struct {
+	URL   string               `json:"url,omitempty"`
+	Parts []BackupDownloadPart `json:"parts,omitempty"`
 }
 
 // BackupService 数据库备份恢复服务
@@ -206,10 +188,9 @@ type BackupService struct {
 	backingUp bool
 	restoring bool
 
-	storeMu   sync.Mutex // 保护 store/s3Cfg/storeSig 缓存
-	store     BackupObjectStore
-	s3Cfg     *BackupS3Config
-	storeSig  string // 配置指纹，用于多实例下检测配置变更并重建客户端
+	storeMu sync.Mutex // 保护 store/s3Cfg 缓存
+	store   BackupObjectStore
+	s3Cfg   *BackupS3Config
 
 	recordsMu sync.Mutex // 保护 records 的 load/save 操作
 
@@ -217,12 +198,19 @@ type BackupService struct {
 	cronSched   *cron.Cron
 	cronEntryID cron.EntryID
 
-	wg           sync.WaitGroup     // 追踪活跃的备份/恢复 goroutine
-	shuttingDown atomic.Bool        // 阻止新备份启动
-	bgCtx        context.Context    // 所有后台操作的 parent context
-	bgCancel     context.CancelFunc // 取消所有活跃后台操作
+	// lockCache/db elect a single leader for the scheduled backup across
+	// instances; instanceID identifies this process as the lock owner. Injected
+	// via SetLeaderLock — when both are nil the backup runs ungated
+	// (single-instance / test behavior).
+	lockCache  LeaderLockCache
+	db         *sql.DB
+	instanceID string
 
-	probeDoer httpProbeDoer // PublicBaseURL 前缀公开性探测客户端（默认 http.DefaultClient）
+	wg            sync.WaitGroup     // 追踪活跃的备份/恢复 goroutine
+	shuttingDown  atomic.Bool        // 阻止新备份启动
+	bgCtx         context.Context    // 所有后台操作的 parent context
+	bgCancel      context.CancelFunc // 取消所有活跃后台操作
+	partSizeBytes int64              // 分卷阈值；生产使用 4 GiB，测试可注入更小值
 }
 
 func NewBackupService(
@@ -242,8 +230,20 @@ func NewBackupService(
 		dumper:                  dumper,
 		bgCtx:                   bgCtx,
 		bgCancel:                bgCancel,
-		probeDoer:               newBackupProbeHTTPClient(),
+		partSizeBytes:           defaultBackupPartSizeBytes,
+		instanceID:              uuid.NewString(),
 	}
+}
+
+// SetLeaderLock injects the leader-lock cache and DB used to elect a single
+// instance for the scheduled backup. When both are nil the scheduled backup runs
+// ungated (single-instance / test behavior).
+func (s *BackupService) SetLeaderLock(lockCache LeaderLockCache, db *sql.DB) {
+	if s == nil {
+		return
+	}
+	s.lockCache = lockCache
+	s.db = db
 }
 
 // Start 启动定时备份调度器并清理孤立记录
@@ -269,31 +269,55 @@ func (s *BackupService) Start() {
 	}
 }
 
-// recoverStaleRecords 启动时将孤立的 running 记录标记为 failed
+// recoverStaleRecords 启动时将孤立的 running 记录标记为 failed，并清理已上传对象。
 func (s *BackupService) recoverStaleRecords() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer loadCancel()
 
-	records, err := s.loadRecords(ctx)
+	records, err := s.loadRecords(loadCtx)
 	if err != nil {
 		return
 	}
 	for i := range records {
 		if records[i].Status == "running" {
+			staleRecord := records[i]
 			records[i].Status = "failed"
 			records[i].ErrorMsg = "interrupted by server restart"
 			records[i].Progress = ""
 			records[i].FinishedAt = time.Now().Format(time.RFC3339)
-			_ = s.saveRecord(ctx, &records[i])
+			s.saveRecoveredRecord(&records[i])
+
+			if cleanupErr := s.cleanupStaleBackupObjects(&staleRecord); cleanupErr != nil {
+				records[i].ErrorMsg = fmt.Sprintf("interrupted by server restart; cleanup failed, manual deletion may be required: %v", cleanupErr)
+				s.saveRecoveredRecord(&records[i])
+				logger.LegacyPrintf("service.backup", "[Backup] failed to clean stale backup objects for %s: %v", records[i].ID, cleanupErr)
+			}
 			logger.LegacyPrintf("service.backup", "[Backup] recovered stale running record: %s", records[i].ID)
 		}
 		if records[i].RestoreStatus == "running" {
 			records[i].RestoreStatus = "failed"
 			records[i].RestoreError = "interrupted by server restart"
-			_ = s.saveRecord(ctx, &records[i])
+			s.saveRecoveredRecord(&records[i])
 			logger.LegacyPrintf("service.backup", "[Backup] recovered stale restoring record: %s", records[i].ID)
 		}
 	}
+}
+
+func (s *BackupService) saveRecoveredRecord(record *BackupRecord) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.saveRecord(ctx, record); err != nil {
+		logger.LegacyPrintf("service.backup", "[Backup] 保存恢复后的备份记录失败 %s: %v", record.ID, err)
+	}
+}
+
+func (s *BackupService) cleanupStaleBackupObjects(record *BackupRecord) error {
+	if len(backupObjectKeys(record)) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), backupObjectCleanupTimeout)
+	defer cancel()
+	return s.deleteBackupObjects(ctx, record)
 }
 
 // Stop 停止定时备份并等待活跃操作完成
@@ -353,81 +377,25 @@ func (s *BackupService) GetS3Config(ctx context.Context) (*BackupS3Config, error
 	return cfg, nil
 }
 
-// GetSharedObjectStorageConfig 实现 SharedObjectStorageConfigReader 接口。
-// 返回解密后的完整配置（含 SecretAccessKey），供 Agnes 图片存储等模块构造 S3 客户端。
-// 返回 nil, nil 表示尚未配置——调用方应据此返回明确错误，不静默回退到环境变量。
-func (s *BackupService) GetSharedObjectStorageConfig(ctx context.Context) (*BackupS3Config, error) {
-	cfg, err := s.loadS3Config(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if cfg == nil || !cfg.IsConfigured() {
-		return nil, nil
-	}
-	return cfg, nil
-}
-
 func (s *BackupService) UpdateS3Config(ctx context.Context, cfg BackupS3Config) (*BackupS3Config, error) {
-	// 强制规范化备份前缀：固定为 "backups"，防止跨前缀写入或根目录写入。
-	// Agnes 图片使用 agnes-chat/，AI 生图使用 image-generation/，均由常量固定，不由此配置控制。
-	cfg.Prefix = normalizeBackupPrefix(cfg.Prefix)
-
-	// 加载旧配置（用于保留原 SecretAccessKey 密文）。
-	// 必须传播读取错误：若 settings 暂时故障或 JSON 损坏，old 为 nil 且 err 非 nil，
-	// 此时若管理员留空 Secret 修改其他字段，会保存一个没有 Secret 的新配置，
-	// 覆盖已存在的凭证，使备份/Agnes/生图三条共享存储链路同时不可用。
-	old, err := s.loadS3ConfigRaw(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("load previous s3 config: %w", err)
-	}
-
+	// 如果没提供 secret，保留原有值
 	if cfg.SecretAccessKey == "" {
-		// 编辑时留空：保留旧密文，避免解密后再以明文写回（防止明文泄露）。
-		// old == nil 表示此前未配置过（首次配置分两步填写的场景），允许空 Secret 保存。
+		old, _ := s.loadS3Config(ctx)
 		if old != nil {
 			cfg.SecretAccessKey = old.SecretAccessKey
 		}
 	} else {
-		// 提供了新 secret：拒绝用自动生成的临时密钥加密，该密钥每次重启都会变化，
-		// 落库的密文在重启/升级后无法解密（#4524）。与支付、TOTP 的处理保持一致。
+		// 拒绝用自动生成的临时密钥加密：该密钥每次重启都会变化，落库的密文在
+		// 重启/升级后无法解密（#4524）。与支付、TOTP 的处理保持一致。
 		if !s.encryptionKeyConfigured {
 			return nil, ErrSecretEncryptionKeyNotConfigured
 		}
-		// 加密 SecretAccessKey 后保存
+		// 加密 SecretAccessKey
 		encrypted, err := s.encryptor.Encrypt(cfg.SecretAccessKey)
 		if err != nil {
 			return nil, fmt.Errorf("encrypt secret: %w", err)
 		}
 		cfg.SecretAccessKey = encrypted
-	}
-
-	// PublicBaseURL 安全边界验证（fail-closed）：
-	// 随机路径/日志/UI 警告都不能阻止 R2 custom domain / public bucket 的匿名读取。
-	// 此处通过探测 backups/.policy-probe-<uuid> 验证 CDN/Worker 策略是否拒绝 backups/ 前缀：
-	//   - 403：策略生效（Worker 已部署或 bucket 私有）→ 允许保存
-	//   - 404：backups/ 公开可读 → 拒绝保存，要求先部署 deploy/cloudflare-worker/r2-access-policy.js
-	//   - 网络错误：fail-closed 拒绝保存（旧 warn-only 会允许未验证的公开配置）
-	//
-	// 必须探测所有公开入口（PublicBaseURL + AdditionalPublicBaseURLs）：
-	// Worker 仅保护 PublicBaseURL 这一路由，r2.dev Public Development URL 或未受保护的
-	// custom domain 可绕过。管理员必须声明所有公开入口，后端逐一验证策略生效；
-	// 或在 Cloudflare 控制台禁用这些入口（推荐，此时 AdditionalPublicBaseURLs 留空）。
-	//
-	// ⚠️ 声明式列表是 SECONDARY 纵深防御——管理员可能漏报。HARD 前提是 BucketPrivacyAttested
-	// （管理员书面承诺 bucket 已私有化），真正可验证的边界由 verify-policy.mjs 通过
-	// Cloudflare API 权威获取公开入口后逐一探测。
-	if cfg.PublicBaseURL != "" && !cfg.BucketPrivacyAttested {
-		return nil, ErrBucketPrivacyNotAttested
-	}
-	publicURLs := []string{cfg.PublicBaseURL}
-	publicURLs = append(publicURLs, cfg.AdditionalPublicBaseURLs...)
-	for _, u := range publicURLs {
-		if u == "" {
-			continue
-		}
-		if err := s.verifyBackupPrefixNotPublic(ctx, u); err != nil {
-			return nil, fmt.Errorf("verify public url %q: %w", u, err)
-		}
 	}
 
 	data, err := json.Marshal(cfg)
@@ -438,193 +406,20 @@ func (s *BackupService) UpdateS3Config(ctx context.Context, cfg BackupS3Config) 
 		return nil, fmt.Errorf("save s3 config: %w", err)
 	}
 
-	// 清除缓存的 S3 客户端（本实例）
+	// 清除缓存的 S3 客户端
 	s.storeMu.Lock()
 	s.store = nil
 	s.s3Cfg = nil
-	s.storeSig = ""
 	s.storeMu.Unlock()
 
 	cfg.SecretAccessKey = ""
 	return &cfg, nil
 }
 
-// loadS3ConfigRaw 从数据库加载原始配置（不解密 SecretAccessKey）。
-// 用于 UpdateS3Config 保留原密文，避免解密→明文回写。
-//
-// 错误语义：
-//   - settings repository 读取失败（如 DB 暂时不可用）：返回 (nil, err)，
-//     调用方必须传播此错误，否则会在留空 Secret 编辑其他字段时静默覆盖既有凭证。
-//   - raw == ""（尚未配置）：返回 (nil, nil)，表示首次配置场景。
-//   - JSON 损坏：返回 (nil, ErrBackupS3ConfigCorrupt)。
-func (s *BackupService) loadS3ConfigRaw(ctx context.Context) (*BackupS3Config, error) {
-	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupS3Config)
-	if err != nil {
-		// setting 行不存在 = 尚未配置（合法状态）；其它错误（如 DB 故障）必须传播，
-		// 否则 UpdateS3Config 留空 Secret 编辑时会静默覆盖既有凭证。
-		if errors.Is(err, ErrSettingNotFound) {
-			return nil, nil //nolint:nilnil // 尚未配置是合法状态
-		}
-		return nil, fmt.Errorf("read backup s3 config: %w", err)
-	}
-	if raw == "" {
-		return nil, nil //nolint:nilnil // 尚未配置是合法状态
-	}
-	var cfg BackupS3Config
-	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-		return nil, ErrBackupS3ConfigCorrupt
-	}
-	return &cfg, nil
-}
-
-// verifyBackupPrefixNotPublic 探测 PublicBaseURL 指向的域名是否允许匿名读取 backups/ 前缀。
-//
-// 这是 PublicBaseURL 场景下 backups/ 隔离的可验证安全边界：随机路径/日志/UI 警告都不能
-// 阻止 R2 custom domain / public bucket 的匿名读取，只有 CDN/Worker 层的访问控制可以。
-//
-// SSRF 防护（复用项目已有逻辑）：
-//   - 仅允许 HTTPS（urlvalidator.ValidateHTTPSURL）
-//   - 拒绝 localhost / 私网 IP 字面量 / 云元数据 hostname（isBlockedHostname + urlvalidator）
-//   - 传输层 safeDialContext 防止 DNS rebinding（dial 时再次校验解析 IP）
-//   - 禁止重定向（CheckRedirect 返回 ErrUseLastResponse），防止重定向到内网
-//   - 短超时（backupProbeTimeout），避免无限阻塞保存操作
-//
-// 探测方法：GET（带 Range: bytes=0-0）而非 HEAD。
-// 某些 CDN/WAF 对 HEAD 返回 403 但允许 GET 回源，仅验证 HEAD 不能证明匿名 GET 被拒绝。
-//
-// 响应判定（fail-closed）：
-//   - 403/401：访问被拒绝（Worker 已部署或 bucket 私有）→ 安全，返回 nil
-//   - 404：访问被允许但 key 不存在 → DANGER：backups/ 公开可读
-//   - 200/206：内容被返回（探测 key 不应命中真实对象）→ DANGER
-//   - 3xx/5xx/其他：无法确认策略生效 → DANGER（fail-closed）
-//   - 网络错误：CDN 不可达 → DANGER（fail-closed，不允许多 Saving 未验证的公开配置）
-//
-// 探测 key 使用 backups/.policy-probe-<uuid>，不会匹配任何真实备份
-// （真实备份为 backups/{date}/{uuid}/{filename}）。
-func (s *BackupService) verifyBackupPrefixNotPublic(ctx context.Context, publicBaseURL string) error {
-	base := strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")
-	if base == "" {
-		return nil // 未配置 PublicBaseURL，无需探测
-	}
-
-	// ── SSRF 防护：URL 格式 + scheme + host 校验 ──
-	// ValidateHTTPSURL 强制 HTTPS、拒绝 localhost/私网 IP 字面量；
-	// 额外用 isBlockedHostname 拒绝云元数据 hostname（metadata.google.internal 等）。
-	validated, err := urlvalidator.ValidateHTTPSURL(base, urlvalidator.ValidationOptions{
-		AllowPrivate: false,
-	})
-	if err != nil {
-		return fmt.Errorf("%w: invalid public base url (must be HTTPS, public host, no private IP): %v",
-			ErrBackupPrefixPubliclyReadable, err)
-	}
-	// 额外校验：提取 hostname 检查云元数据黑名单（urlvalidator 不覆盖）
-	if u, perr := http.NewRequest(http.MethodGet, validated, nil); perr == nil {
-		if isBlockedHostname(u.URL.Hostname()) {
-			return fmt.Errorf("%w: hostname %q is blocked (cloud metadata / localhost)",
-				ErrBackupPrefixPubliclyReadable, u.URL.Hostname())
-		}
-	}
-
-	// ── 构造探测请求：GET + Range（而非 HEAD）──
-	probeKey := "backups/.policy-probe-" + uuid.NewString()
-	probeURL := validated + "/" + probeKey
-
-	doer := s.probeDoer
-	if doer == nil {
-		doer = newBackupProbeHTTPClient()
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
-	if err != nil {
-		return fmt.Errorf("%w: construct probe request: %v", ErrBackupPrefixPubliclyReadable, err)
-	}
-	// Range: bytes=0-0 限制响应体大小；某些 CDN 对 HEAD 返回 403 但允许 GET，
-	// 必须用 GET 才能验证匿名读取是否真的被拒绝。
-	req.Header.Set("Range", "bytes=0-0")
-
-	resp, err := doer.Do(req)
-	if err != nil {
-		// 网络不可达（域名未解析、CDN 未配置、连接超时）→ fail-closed 拒绝保存。
-		// 旧实现 warn-only 放行：若 CDN 暂不可达但稍后解析到公开 bucket，备份仍会公开。
-		// 管理员须确保 CDN 域名可达且 Worker 已部署后再保存配置。
-		return fmt.Errorf("%w: cannot reach PublicBaseURL to verify backups/ policy (%v) — "+
-			"ensure the CDN domain is reachable and deploy/cloudflare-worker/r2-access-policy.js is deployed to deny backups/",
-			ErrBackupPrefixPubliclyReadable, err)
-	}
-	defer resp.Body.Close()
-	// 排空并限制 body 读取，防止恶意服务端通过 body 拖垮探测
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-
-	switch {
-	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized:
-		// 访问被明确拒绝——策略生效（Worker 或私有 bucket）
-		return nil
-	case resp.StatusCode == http.StatusNotFound:
-		// 404 表示访问被允许但 key 不存在：backups/ 公开可读
-		return fmt.Errorf("%w: probe %s returned 404 (anonymous access allowed, key missing) — "+
-			"deploy deploy/cloudflare-worker/r2-access-policy.js to deny backups/, or remove PublicBaseURL and use presigned URLs",
-			ErrBackupPrefixPubliclyReadable, probeURL)
-	case resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent:
-		// 200/206：内容被返回（探测 key 不应命中真实对象，命中说明 bucket 完全公开）
-		return fmt.Errorf("%w: probe %s returned status %d (content served) — "+
-			"backups/ is publicly readable; deploy CDN policy or remove PublicBaseURL",
-			ErrBackupPrefixPubliclyReadable, probeURL, resp.StatusCode)
-	default:
-		// 3xx/5xx/其他：无法确认策略生效，视为危险（fail-closed）
-		return fmt.Errorf("%w: probe %s returned unexpected status %d — "+
-			"cannot verify backups/ is not publicly readable; deploy CDN policy or remove PublicBaseURL",
-			ErrBackupPrefixPubliclyReadable, probeURL, resp.StatusCode)
-	}
-}
-
-// newBackupProbeHTTPClient 构造 PublicBaseURL 探测专用的 SSRF 安全 HTTP 客户端。
-//
-// 安全特性：
-//   - safeDialContext：dial 时校验解析 IP，防止 DNS rebinding 到私网（复用 channel_monitor_ssrf.go）
-//   - CheckRedirect：禁止跟随重定向，防止重定向到内网地址
-//   - Timeout：backupProbeTimeout（5s），避免无限阻塞保存操作
-//
-// 测试中通过注入 probeDoer mock 绕过此客户端，直接模拟响应。
-func newBackupProbeHTTPClient() *http.Client {
-	tr := &http.Transport{
-		DialContext:       safeDialContext,
-		ForceAttemptHTTP2: true,
-		MaxIdleConns:      2,
-	}
-	return &http.Client{
-		Timeout: backupProbeTimeout,
-		Transport: tr,
-		// 禁止重定向：探测不应跟随 3xx，防止重定向到内网或绕过校验。
-		// 返回 ErrUseLastResponse 使客户端返回首条响应（含 3xx 状态码）供上层判定。
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-}
-
-// normalizeBackupPrefix 强制规范化备份前缀为 "backups"。
-//
-// 这是前缀隔离的硬性边界保护：无论管理员如何配置，备份只使用 backups/ 前缀，
-// 与 Agnes 图片（agnes-chat/）和 AI 生图（image-generation/）严格隔离。
-//
-// 早期实现仅拒绝与图片前缀完全相等的值，仍接受 agnes-chat/foo、image-generation/foo
-// 或任意自定义值，导致备份可写入图片命名空间。现改为无条件返回 "backups"，
-// Prefix 字段不再可配置（前端应展示为只读）。
-func normalizeBackupPrefix(prefix string) string {
-	_ = prefix
-	return "backups"
-}
-
 func (s *BackupService) TestS3Connection(ctx context.Context, cfg BackupS3Config) error {
-	// 强制规范化前缀，避免测试对象写入图片命名空间或根目录
-	cfg.Prefix = normalizeBackupPrefix(cfg.Prefix)
-
-	// 如果没提供 secret，用已保存的（传播读取错误，避免故障下使用空 Secret 测试）
+	// 如果没提供 secret，用已保存的
 	if cfg.SecretAccessKey == "" {
-		old, err := s.loadS3Config(ctx)
-		if err != nil {
-			return fmt.Errorf("load saved s3 config: %w", err)
-		}
+		old, _ := s.loadS3Config(ctx)
 		if old != nil {
 			cfg.SecretAccessKey = old.SecretAccessKey
 		}
@@ -638,70 +433,7 @@ func (s *BackupService) TestS3Connection(ctx context.Context, cfg BackupS3Config
 	if err != nil {
 		return err
 	}
-
-	// 1. 验证 bucket 可访问
-	if err := store.HeadBucket(ctx); err != nil {
-		return fmt.Errorf("bucket not accessible: %w", err)
-	}
-
-	// 2. 验证上传权限：写入一个临时测试对象（强制位于 backups/ 前缀下）
-	testKey := fmt.Sprintf("%s/.s3-connection-test/%d-%d",
-		cfg.Prefix, time.Now().UnixNano(), time.Now().UnixNano()%1000)
-	testBody := []byte("s3 connection test")
-	if _, err := store.Upload(ctx, testKey, bytes.NewReader(testBody), "text/plain"); err != nil {
-		return fmt.Errorf("upload test object failed (permission denied?): %w", err)
-	}
-
-	// 3. 验证读取权限
-	reader, err := store.Download(ctx, testKey)
-	if err != nil {
-		// 清理失败时记录日志但不掩盖原始错误
-		if delErr := store.Delete(ctx, testKey); delErr != nil {
-			logger.LegacyPrintf("service.backup", "[Backup] TestS3Connection: cleanup failed after download error: %v (test key: %s)", delErr, testKey)
-		}
-		return fmt.Errorf("download test object failed (read permission denied?): %w", err)
-	}
-	downloaded, readErr := io.ReadAll(reader)
-	_ = reader.Close()
-	if readErr != nil {
-		if delErr := store.Delete(ctx, testKey); delErr != nil {
-			logger.LegacyPrintf("service.backup", "[Backup] TestS3Connection: cleanup failed after read error: %v (test key: %s)", delErr, testKey)
-		}
-		return fmt.Errorf("read test object failed: %w", readErr)
-	}
-	if !bytes.Equal(downloaded, testBody) {
-		if delErr := store.Delete(ctx, testKey); delErr != nil {
-			logger.LegacyPrintf("service.backup", "[Backup] TestS3Connection: cleanup failed after content mismatch: %v (test key: %s)", delErr, testKey)
-		}
-		return fmt.Errorf("test object content mismatch: uploaded %d bytes, downloaded %d bytes", len(testBody), len(downloaded))
-	}
-
-	// 4. 验证删除权限
-	if err := store.Delete(ctx, testKey); err != nil {
-		return fmt.Errorf("delete test object failed (delete permission denied?): %w", err)
-	}
-
-	// 5. 验证所有公开入口的 backups/ 访问策略（CDN/Worker 边界）
-	// S3 凭证与 bucket 权限正确，不代表公开域名安全。若任一公开入口允许匿名读取 backups/，
-	// 数据库备份将公开暴露。必须探测 PublicBaseURL + AdditionalPublicBaseURLs 全部入口，
-	// 避免 r2.dev / 未受 Worker 保护的 custom domain 绕过。
-	//
-	// ⚠️ 同 UpdateS3Config：声明式列表是 SECONDARY 防御，HARD 前提是 BucketPrivacyAttested。
-	if cfg.PublicBaseURL != "" && !cfg.BucketPrivacyAttested {
-		return ErrBucketPrivacyNotAttested
-	}
-	publicURLs := []string{cfg.PublicBaseURL}
-	publicURLs = append(publicURLs, cfg.AdditionalPublicBaseURLs...)
-	for _, u := range publicURLs {
-		if u == "" {
-			continue
-		}
-		if err := s.verifyBackupPrefixNotPublic(ctx, u); err != nil {
-			return fmt.Errorf("verify public url %q: %w", u, err)
-		}
-	}
-
-	return nil
+	return store.HeadBucket(ctx)
 }
 
 // ─── 定时备份管理 ───
@@ -792,6 +524,16 @@ func (s *BackupService) runScheduledBackup() {
 	ctx, cancel := context.WithTimeout(s.bgCtx, 30*time.Minute)
 	defer cancel()
 
+	// 多实例保护: 集群部署时只让 leader 执行定时备份, 避免每个实例各自对同一个
+	// 数据库跑一次全量 dump、上传时峰值内存翻倍、以及多份同名对象互相覆盖。
+	// 手动触发的备份 (CreateBackup/StartBackup) 不受此限, 运维仍可随时在任一节点强制备份。
+	release, ok := tryAcquireSingletonLeaderLock(ctx, s.lockCache, s.db, backupScheduledLeaderLockKey, s.instanceID, backupScheduledLeaderLockTTL)
+	if !ok {
+		logger.LegacyPrintf("service.backup", "[Backup] 定时备份跳过: 本实例非 leader")
+		return
+	}
+	defer release()
+
 	// 读取定时备份配置中的过期天数
 	schedule, _ := s.GetSchedule(ctx)
 	expireDays := 14 // 默认14天过期
@@ -822,7 +564,7 @@ func (s *BackupService) runScheduledBackup() {
 
 // ─── 备份/恢复核心 ───
 
-// CreateBackup 创建全量数据库备份并上传到 S3（流式处理）
+// CreateBackup 创建全量数据库备份并上传到 S3。
 // expireDays: 备份过期天数，0=永不过期，默认14天
 func (s *BackupService) CreateBackup(ctx context.Context, triggeredBy string, expireDays int) (*BackupRecord, error) {
 	if s.shuttingDown.Load() {
@@ -876,61 +618,27 @@ func (s *BackupService) CreateBackup(ctx context.Context, triggeredBy string, ex
 		ExpiresAt:   expiresAt,
 	}
 
-	// 流式执行: pg_dump -> gzip -> S3 upload
-	dumpReader, err := s.dumper.Dump(ctx)
+	archivePath, sizeBytes, err := s.createCompressedBackupFile(ctx)
 	if err != nil {
 		record.Status = "failed"
-		record.ErrorMsg = fmt.Sprintf("pg_dump failed: %v", err)
+		record.ErrorMsg = err.Error()
 		record.FinishedAt = time.Now().Format(time.RFC3339)
 		_ = s.saveRecord(ctx, record)
-		return record, fmt.Errorf("pg_dump: %w", err)
+		return record, err
 	}
-
-	// 使用 io.Pipe 将 gzip 压缩数据流式传递给 S3 上传
-	pr, pw := io.Pipe()
-	gzipDone := make(chan error, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				pw.CloseWithError(fmt.Errorf("gzip goroutine panic: %v", r)) //nolint:errcheck
-				gzipDone <- fmt.Errorf("gzip goroutine panic: %v", r)
-			}
-		}()
-		gzWriter := gzip.NewWriter(pw)
-		var gzErr error
-		_, gzErr = io.Copy(gzWriter, dumpReader)
-		if closeErr := gzWriter.Close(); closeErr != nil && gzErr == nil {
-			gzErr = closeErr
-		}
-		if closeErr := dumpReader.Close(); closeErr != nil && gzErr == nil {
-			gzErr = closeErr
-		}
-		if gzErr != nil {
-			_ = pw.CloseWithError(gzErr)
-		} else {
-			_ = pw.Close()
-		}
-		gzipDone <- gzErr
-	}()
-
-	contentType := "application/gzip"
-	sizeBytes, err := objectStore.Upload(ctx, s3Key, pr, contentType)
-	if err != nil {
-		_ = pr.CloseWithError(err) // 确保 gzip goroutine 不会悬挂
-		gzErr := <-gzipDone        // 安全等待 gzip goroutine 完成
-		record.Status = "failed"
-		errMsg := fmt.Sprintf("S3 upload failed: %v", err)
-		if gzErr != nil {
-			errMsg = fmt.Sprintf("gzip/dump failed: %v", gzErr)
-		}
-		record.ErrorMsg = errMsg
-		record.FinishedAt = time.Now().Format(time.RFC3339)
-		_ = s.saveRecord(ctx, record)
-		return record, fmt.Errorf("backup upload: %w", err)
-	}
-	<-gzipDone // 确保 gzip goroutine 已退出
-
+	defer func() { _ = cleanupBackupFiles(archivePath) }()
 	record.SizeBytes = sizeBytes
+	if err := s.saveRecord(ctx, record); err != nil {
+		return nil, fmt.Errorf("save initial record: %w", err)
+	}
+	if err := s.uploadBackupArchive(ctx, record, objectStore, s3Cfg, archivePath); err != nil {
+		record.Status = "failed"
+		record.ErrorMsg = err.Error()
+		record.FinishedAt = time.Now().Format(time.RFC3339)
+		_ = s.saveRecord(ctx, record)
+		return record, err
+	}
+
 	record.Status = "completed"
 	record.FinishedAt = time.Now().Format(time.RFC3339)
 	if err := s.saveRecord(ctx, record); err != nil {
@@ -1026,78 +734,43 @@ func (s *BackupService) StartBackup(ctx context.Context, triggeredBy string, exp
 				_ = s.saveRecord(context.Background(), record)
 			}
 		}()
-		s.executeBackup(record, objectStore)
+		s.executeBackup(record, objectStore, s3Cfg)
 	}()
 
 	return &result, nil
 }
 
 // executeBackup 后台执行备份（独立于 HTTP context）
-func (s *BackupService) executeBackup(record *BackupRecord, objectStore BackupObjectStore) {
+func (s *BackupService) executeBackup(record *BackupRecord, objectStore BackupObjectStore, s3Cfg *BackupS3Config) {
 	ctx, cancel := context.WithTimeout(s.bgCtx, 30*time.Minute)
 	defer cancel()
 
-	// 阶段1: pg_dump
+	// 阶段1: pg_dump -> gzip 临时文件
 	record.Progress = "dumping"
 	_ = s.saveRecord(ctx, record)
-
-	dumpReader, err := s.dumper.Dump(ctx)
+	archivePath, sizeBytes, err := s.createCompressedBackupFile(ctx)
 	if err != nil {
 		record.Status = "failed"
-		record.ErrorMsg = fmt.Sprintf("pg_dump failed: %v", err)
+		record.ErrorMsg = err.Error()
 		record.Progress = ""
 		record.FinishedAt = time.Now().Format(time.RFC3339)
 		_ = s.saveRecord(context.Background(), record)
 		return
 	}
+	defer func() { _ = cleanupBackupFiles(archivePath) }()
+	record.SizeBytes = sizeBytes
 
-	// 阶段2: gzip + upload
+	// 阶段2: 单对象或分卷上传
 	record.Progress = "uploading"
 	_ = s.saveRecord(ctx, record)
-
-	pr, pw := io.Pipe()
-	gzipDone := make(chan error, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				pw.CloseWithError(fmt.Errorf("gzip goroutine panic: %v", r)) //nolint:errcheck
-				gzipDone <- fmt.Errorf("gzip goroutine panic: %v", r)
-			}
-		}()
-		gzWriter := gzip.NewWriter(pw)
-		var gzErr error
-		_, gzErr = io.Copy(gzWriter, dumpReader)
-		if closeErr := gzWriter.Close(); closeErr != nil && gzErr == nil {
-			gzErr = closeErr
-		}
-		if closeErr := dumpReader.Close(); closeErr != nil && gzErr == nil {
-			gzErr = closeErr
-		}
-		if gzErr != nil {
-			_ = pw.CloseWithError(gzErr)
-		} else {
-			_ = pw.Close()
-		}
-		gzipDone <- gzErr
-	}()
-
-	contentType := "application/gzip"
-	sizeBytes, err := objectStore.Upload(ctx, record.S3Key, pr, contentType)
-	if err != nil {
-		_ = pr.CloseWithError(err) // 确保 gzip goroutine 不会悬挂
-		gzErr := <-gzipDone        // 安全等待 gzip goroutine 完成
+	if err := s.uploadBackupArchive(ctx, record, objectStore, s3Cfg, archivePath); err != nil {
 		record.Status = "failed"
-		errMsg := fmt.Sprintf("S3 upload failed: %v", err)
-		if gzErr != nil {
-			errMsg = fmt.Sprintf("gzip/dump failed: %v", gzErr)
-		}
-		record.ErrorMsg = errMsg
+		record.ErrorMsg = err.Error()
 		record.Progress = ""
 		record.FinishedAt = time.Now().Format(time.RFC3339)
 		_ = s.saveRecord(context.Background(), record)
 		return
 	}
-	<-gzipDone // 确保 gzip goroutine 已退出
 
 	record.SizeBytes = sizeBytes
 	record.Status = "completed"
@@ -1106,6 +779,108 @@ func (s *BackupService) executeBackup(record *BackupRecord, objectStore BackupOb
 	if err := s.saveRecord(context.Background(), record); err != nil {
 		logger.LegacyPrintf("service.backup", "[Backup] 保存备份记录失败: %v", err)
 	}
+}
+
+func (s *BackupService) createCompressedBackupFile(ctx context.Context) (string, int64, error) {
+	dumpReader, err := s.dumper.Dump(ctx)
+	if err != nil {
+		return "", 0, fmt.Errorf("pg_dump: %w", err)
+	}
+	archive, err := os.CreateTemp("", "sub2api-backup-*.sql.gz")
+	if err != nil {
+		_ = dumpReader.Close()
+		return "", 0, fmt.Errorf("create backup archive: %w", err)
+	}
+	archivePath := archive.Name()
+
+	gzWriter := gzip.NewWriter(archive)
+	_, copyErr := io.Copy(gzWriter, dumpReader)
+	if closeErr := gzWriter.Close(); copyErr == nil && closeErr != nil {
+		copyErr = closeErr
+	}
+	if closeErr := dumpReader.Close(); copyErr == nil && closeErr != nil {
+		copyErr = closeErr
+	}
+	if closeErr := archive.Close(); copyErr == nil && closeErr != nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil {
+		_ = cleanupBackupFiles(archivePath)
+		return "", 0, fmt.Errorf("gzip/dump failed: %w", copyErr)
+	}
+
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		_ = cleanupBackupFiles(archivePath)
+		return "", 0, fmt.Errorf("stat backup archive: %w", err)
+	}
+	return archivePath, info.Size(), nil
+}
+
+func (s *BackupService) uploadBackupArchive(ctx context.Context, record *BackupRecord, objectStore BackupObjectStore, cfg *BackupS3Config, archivePath string) error {
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		return fmt.Errorf("stat backup archive: %w", err)
+	}
+	partSize := s.partSizeBytes
+	if partSize <= 0 {
+		partSize = defaultBackupPartSizeBytes
+	}
+	if info.Size() <= partSize {
+		if _, err := objectStore.UploadFile(ctx, record.S3Key, archivePath, "application/gzip"); err != nil {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), backupObjectCleanupTimeout)
+			cleanupErr := deleteBackupObjectKeys(cleanupCtx, objectStore, record)
+			cleanupCancel()
+			return errors.Join(fmt.Errorf("backup upload: %w", err), cleanupErr)
+		}
+		record.Parts = nil
+		return nil
+	}
+
+	localParts, err := splitBackupFile(archivePath, partSize)
+	if err != nil {
+		return fmt.Errorf("split backup archive: %w", err)
+	}
+	defer func() {
+		paths := make([]string, 0, len(localParts))
+		for _, part := range localParts {
+			paths = append(paths, part.Path)
+		}
+		_ = cleanupBackupFiles(paths...)
+	}()
+	if cfg == nil {
+		return errors.New("backup S3 config is unavailable for split upload")
+	}
+
+	record.S3Key = ""
+	record.Parts = make([]BackupPart, 0, len(localParts))
+	partRoot := strings.TrimRight(s.buildS3Key(cfg, record.ID), "/")
+	for _, part := range localParts {
+		record.Parts = append(record.Parts, BackupPart{
+			Index:     part.Index,
+			S3Key:     s.buildBackupPartKey(partRoot, part.Index),
+			SizeBytes: part.SizeBytes,
+			SHA256:    part.SHA256,
+		})
+	}
+	if err := s.saveRecord(ctx, record); err != nil {
+		return fmt.Errorf("save split backup plan: %w", err)
+	}
+	for i, part := range localParts {
+		if _, err := objectStore.UploadFile(ctx, record.Parts[i].S3Key, part.Path, "application/octet-stream"); err != nil {
+			// PUT 可能已经在对象存储端成功、但客户端因超时收到错误；
+			// 因此失败时清理整份分卷计划，而不只清理此前返回成功的卷。
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), backupObjectCleanupTimeout)
+			cleanupErr := deleteBackupObjectKeys(cleanupCtx, objectStore, record)
+			cleanupCancel()
+			return errors.Join(fmt.Errorf("upload backup part %d: %w", part.Index, err), cleanupErr)
+		}
+	}
+	return nil
+}
+
+func (s *BackupService) buildBackupPartKey(root string, index int) string {
+	return fmt.Sprintf("%s/payload.part-%06d", strings.TrimRight(root, "/"), index)
 }
 
 // RestoreBackup 从 S3 下载备份并流式恢复到数据库
@@ -1140,7 +915,16 @@ func (s *BackupService) RestoreBackup(ctx context.Context, backupID string) erro
 		return fmt.Errorf("init object store: %w", err)
 	}
 
-	// 从 S3 流式下载
+	if len(record.Parts) > 0 {
+		archivePath, err := s.downloadBackupParts(ctx, objectStore, record.Parts)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = cleanupBackupFiles(archivePath) }()
+		return s.restoreArchive(ctx, archivePath)
+	}
+
+	// 旧记录从 S3 流式下载
 	body, err := objectStore.Download(ctx, record.S3Key)
 	if err != nil {
 		return fmt.Errorf("S3 download failed: %w", err)
@@ -1236,6 +1020,29 @@ func (s *BackupService) executeRestore(record *BackupRecord, objectStore BackupO
 	ctx, cancel := context.WithTimeout(s.bgCtx, 30*time.Minute)
 	defer cancel()
 
+	if len(record.Parts) > 0 {
+		archivePath, err := s.downloadBackupParts(ctx, objectStore, record.Parts)
+		if err != nil {
+			record.RestoreStatus = "failed"
+			record.RestoreError = err.Error()
+			_ = s.saveRecord(context.Background(), record)
+			return
+		}
+		defer func() { _ = cleanupBackupFiles(archivePath) }()
+		if err := s.restoreArchive(ctx, archivePath); err != nil {
+			record.RestoreStatus = "failed"
+			record.RestoreError = fmt.Sprintf("pg restore: %v", err)
+			_ = s.saveRecord(context.Background(), record)
+			return
+		}
+		record.RestoreStatus = "completed"
+		record.RestoredAt = time.Now().Format(time.RFC3339)
+		if err := s.saveRecord(context.Background(), record); err != nil {
+			logger.LegacyPrintf("service.backup", "[Backup] 保存恢复记录失败: %v", err)
+		}
+		return
+	}
+
 	body, err := objectStore.Download(ctx, record.S3Key)
 	if err != nil {
 		record.RestoreStatus = "failed"
@@ -1266,6 +1073,79 @@ func (s *BackupService) executeRestore(record *BackupRecord, objectStore BackupO
 	if err := s.saveRecord(context.Background(), record); err != nil {
 		logger.LegacyPrintf("service.backup", "[Backup] 保存恢复记录失败: %v", err)
 	}
+}
+
+func (s *BackupService) downloadBackupParts(ctx context.Context, objectStore BackupObjectStore, parts []BackupPart) (path string, err error) {
+	if len(parts) == 0 {
+		return "", errors.New("backup parts are empty")
+	}
+	ordered := append([]BackupPart(nil), parts...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Index < ordered[j].Index })
+	for i, part := range ordered {
+		if part.Index != i+1 || part.S3Key == "" || part.SizeBytes <= 0 {
+			return "", fmt.Errorf("invalid backup part metadata at index %d", i+1)
+		}
+	}
+
+	archive, err := os.CreateTemp("", "sub2api-restore-*.sql.gz")
+	if err != nil {
+		return "", fmt.Errorf("create restore archive: %w", err)
+	}
+	path = archive.Name()
+	cleanup := func() {
+		_ = archive.Close()
+		_ = cleanupBackupFiles(path)
+	}
+
+	for _, part := range ordered {
+		body, downloadErr := objectStore.Download(ctx, part.S3Key)
+		if downloadErr != nil {
+			cleanup()
+			return "", fmt.Errorf("download backup part %d: %w", part.Index, downloadErr)
+		}
+		hash := sha256.New()
+		written, copyErr := io.Copy(io.MultiWriter(archive, hash), body)
+		closeErr := body.Close()
+		if copyErr != nil {
+			cleanup()
+			return "", fmt.Errorf("read backup part %d: %w", part.Index, copyErr)
+		}
+		if closeErr != nil {
+			cleanup()
+			return "", fmt.Errorf("close backup part %d: %w", part.Index, closeErr)
+		}
+		if written != part.SizeBytes {
+			cleanup()
+			return "", fmt.Errorf("backup part %d size mismatch: got %d, want %d", part.Index, written, part.SizeBytes)
+		}
+		if part.SHA256 != "" && !strings.EqualFold(part.SHA256, hex.EncodeToString(hash.Sum(nil))) {
+			cleanup()
+			return "", fmt.Errorf("backup part %d checksum mismatch", part.Index)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		_ = cleanupBackupFiles(path)
+		return "", fmt.Errorf("close restore archive: %w", err)
+	}
+	return path, nil
+}
+
+func (s *BackupService) restoreArchive(ctx context.Context, archivePath string) error {
+	archive, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("open restore archive: %w", err)
+	}
+	defer func() { _ = archive.Close() }()
+
+	gzReader, err := gzip.NewReader(archive)
+	if err != nil {
+		return fmt.Errorf("gzip reader: %w", err)
+	}
+	defer func() { _ = gzReader.Close() }()
+	if err := s.dumper.Restore(ctx, gzReader); err != nil {
+		return fmt.Errorf("pg restore: %w", err)
+	}
+	return nil
 }
 
 // ─── 备份记录管理 ───
@@ -1316,66 +1196,74 @@ func (s *BackupService) DeleteBackup(ctx context.Context, backupID string) error
 	if found == nil {
 		return ErrBackupNotFound
 	}
+	if found.Status == "running" {
+		// 后台上传仍可能依赖 Parts 计划；删除对象会让随后完成的记录引用失效卷。
+		return ErrBackupInProgress
+	}
 
-	// 从 S3 删除
-	if found.S3Key != "" && found.Status == "completed" {
-		// 安全检查：验证 key 位于 backups/ 前缀下，防止跨前缀误删
-		if err := assertBackupKeyPrefix(found.S3Key); err != nil {
-			logger.LegacyPrintf("service.backup", "[Backup] refused to delete key outside backup prefix: %s (backup: %s)", found.S3Key, backupID)
-		} else {
-			s3Cfg, err := s.loadS3Config(ctx)
-			if err == nil && s3Cfg != nil && s3Cfg.IsConfigured() {
-				objectStore, err := s.getOrCreateStore(ctx, s3Cfg)
-				if err == nil {
-					if delErr := objectStore.Delete(ctx, found.S3Key); delErr != nil {
-						logger.LegacyPrintf("service.backup", "[Backup] failed to delete S3 object %s: %v", found.S3Key, delErr)
-					}
-				}
-			}
-		}
+	// 从对象存储删除所有单文件或分卷对象。删除不完整时保留记录，便于重试。
+	if err := s.deleteBackupObjects(ctx, found); err != nil {
+		return err
 	}
 
 	return s.saveRecordsLocked(ctx, remaining)
 }
 
 // GetBackupDownloadURL 获取备份文件预签名下载 URL
-func (s *BackupService) GetBackupDownloadURL(ctx context.Context, backupID string) (string, error) {
+func (s *BackupService) GetBackupDownloadURL(ctx context.Context, backupID string) (BackupDownloadResponse, error) {
+	var download BackupDownloadResponse
 	record, err := s.GetBackupRecord(ctx, backupID)
 	if err != nil {
-		return "", err
+		return download, err
 	}
 	if record.Status != "completed" {
-		return "", infraerrors.BadRequest("BACKUP_NOT_COMPLETED", "backup is not completed")
+		return download, infraerrors.BadRequest("BACKUP_NOT_COMPLETED", "backup is not completed")
 	}
 
 	s3Cfg, err := s.loadS3Config(ctx)
 	if err != nil {
-		return "", err
+		return download, err
 	}
 	objectStore, err := s.getOrCreateStore(ctx, s3Cfg)
 	if err != nil {
-		return "", err
+		return download, err
 	}
 
+	if len(record.Parts) > 0 {
+		parts := append([]BackupPart(nil), record.Parts...)
+		sort.Slice(parts, func(i, j int) bool { return parts[i].Index < parts[j].Index })
+		for i, part := range parts {
+			if part.Index != i+1 || part.S3Key == "" || part.SizeBytes <= 0 {
+				return download, fmt.Errorf("invalid backup part metadata at index %d", i+1)
+			}
+			url, presignErr := objectStore.PresignURL(ctx, part.S3Key, 1*time.Hour)
+			if presignErr != nil {
+				return download, fmt.Errorf("presign backup part %d: %w", part.Index, presignErr)
+			}
+			download.Parts = append(download.Parts, BackupDownloadPart{
+				Index:     part.Index,
+				SizeBytes: part.SizeBytes,
+				URL:       url,
+			})
+		}
+		return download, nil
+	}
+	if record.S3Key == "" {
+		return download, errors.New("backup object key is empty")
+	}
 	url, err := objectStore.PresignURL(ctx, record.S3Key, 1*time.Hour)
 	if err != nil {
-		return "", fmt.Errorf("presign url: %w", err)
+		return download, fmt.Errorf("presign url: %w", err)
 	}
-	return url, nil
+	download.URL = url
+	return download, nil
 }
 
 // ─── 内部方法 ───
 
 func (s *BackupService) loadS3Config(ctx context.Context) (*BackupS3Config, error) {
 	raw, err := s.settingRepo.GetValue(ctx, settingKeyBackupS3Config)
-	if err != nil {
-		// setting 行不存在 = 尚未配置（合法状态）；其它错误（如 DB 故障）必须传播。
-		if errors.Is(err, ErrSettingNotFound) {
-			return nil, nil //nolint:nilnil // no config is a valid state
-		}
-		return nil, fmt.Errorf("read backup s3 config: %w", err)
-	}
-	if raw == "" {
+	if err != nil || raw == "" {
 		return nil, nil //nolint:nilnil // no config is a valid state
 	}
 	var cfg BackupS3Config
@@ -1396,20 +1284,15 @@ func (s *BackupService) loadS3Config(ctx context.Context) (*BackupS3Config, erro
 }
 
 func (s *BackupService) getOrCreateStore(ctx context.Context, cfg *BackupS3Config) (BackupObjectStore, error) {
-	if cfg == nil {
-		return nil, ErrBackupS3NotConfigured
-	}
-
-	sig := backupConfigSignature(cfg)
-
 	s.storeMu.Lock()
 	defer s.storeMu.Unlock()
 
-	// 配置指纹比对：本实例若已缓存客户端且配置未变，则复用；否则重建。
-	// 注意：多实例下其他实例不会收到本实例的缓存失效信号，因此指纹比对是必要的——
-	// 每次调用都会从数据库重新加载配置（通过 loadS3Config），签名变化时自动重建。
-	if s.store != nil && s.s3Cfg != nil && s.storeSig == sig {
+	if s.store != nil && s.s3Cfg != nil {
 		return s.store, nil
+	}
+
+	if cfg == nil {
+		return nil, ErrBackupS3NotConfigured
 	}
 
 	store, err := s.storeFactory(ctx, cfg)
@@ -1418,42 +1301,15 @@ func (s *BackupService) getOrCreateStore(ctx context.Context, cfg *BackupS3Confi
 	}
 	s.store = store
 	s.s3Cfg = cfg
-	s.storeSig = sig
 	return store, nil
 }
 
-// backupConfigSignature 计算备份 S3 配置指纹，用于检测配置变更。
-// 包含所有影响 S3 客户端构造的字段（含 SecretAccessKey）。
-func backupConfigSignature(cfg *BackupS3Config) string {
-	if cfg == nil {
-		return ""
-	}
-	return fmt.Sprintf("%s|%s|%s|%s|%s|%v",
-		cfg.Endpoint, cfg.Region, cfg.Bucket,
-		cfg.AccessKeyID, cfg.SecretAccessKey,
-		cfg.ForcePathStyle,
-	)
-}
-
 func (s *BackupService) buildS3Key(cfg *BackupS3Config, fileName string) string {
-	// 强制规范化：无论 cfg.Prefix 是什么，备份 key 必定以 backups/ 开头
-	prefix := normalizeBackupPrefix(cfg.Prefix)
-	// 插入随机目录段使备份路径不可预测，作为 PublicBaseURL 公开桶场景下的纵深防御：
-	// 即使 bucket 通过 R2 custom domain 公开，攻击者也无法枚举/猜测 backups/ 下的对象路径
-	// （文件名本身含可预测的 {dbname}_{timestamp}，单纯依赖路径保密并不可靠，
-	// 但随机段使批量扫描不可行）。真正的安全边界仍需在 CDN/Worker 层显式拒绝 backups/。
-	return fmt.Sprintf("%s/%s/%s/%s", prefix, time.Now().Format("2006/01/02"), uuid.NewString(), fileName)
-}
-
-// assertBackupKeyPrefix 验证 S3 key 位于 backups/ 前缀下，防止跨前缀误删。
-// 用于 DeleteBackup 和 cleanupOldBackups 的安全检查。
-func assertBackupKeyPrefix(key string) error {
-	normalized := normalizeBackupPrefix("") // "backups"
-	expected := normalized + "/"
-	if !strings.HasPrefix(key, expected) {
-		return fmt.Errorf("refused to delete key outside backup prefix: %s (expected prefix: %s)", key, expected)
+	prefix := strings.TrimRight(cfg.Prefix, "/")
+	if prefix == "" {
+		prefix = "backups"
 	}
-	return nil
+	return fmt.Sprintf("%s/%s/%s", prefix, time.Now().Format("2006/01/02"), fileName)
 }
 
 // loadRecords 加载备份记录，区分"无数据"和"数据损坏"
@@ -1557,33 +1413,87 @@ func (s *BackupService) cleanupOldBackups(ctx context.Context, schedule *BackupS
 		}
 	}
 
-	// 删除 S3 上的文件
+	var cleanupErrs []error
+	deletedCount := 0
 	for _, r := range toDelete {
-		if r.S3Key != "" {
-			_ = s.deleteS3Object(ctx, r.S3Key)
+		if err := s.deleteBackupObjects(ctx, &r); err != nil {
+			// 对象删除失败时保留记录，避免丢失后续重试所需的 key。
+			toKeep = append(toKeep, r)
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("cleanup backup %s: %w", r.ID, err))
+			continue
 		}
+		deletedCount++
 	}
 
 	if len(toDelete) > 0 {
-		logger.LegacyPrintf("service.backup", "[Backup] 自动清理了 %d 个过期备份", len(toDelete))
-		return s.saveRecordsLocked(ctx, toKeep)
+		if err := s.saveRecordsLocked(ctx, toKeep); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("save backup records after cleanup: %w", err))
+		}
+		if deletedCount > 0 {
+			logger.LegacyPrintf("service.backup", "[Backup] 自动清理了 %d 个过期备份", deletedCount)
+		}
+		return errors.Join(cleanupErrs...)
 	}
 	return nil
 }
 
-func (s *BackupService) deleteS3Object(ctx context.Context, key string) error {
-	// 安全检查：验证 key 位于 backups/ 前缀下，防止跨前缀误删
-	if err := assertBackupKeyPrefix(key); err != nil {
-		logger.LegacyPrintf("service.backup", "[Backup] refused to delete key outside backup prefix: %s", key)
-		return err
+// backupObjectKeys 返回一条备份记录关联的全部对象 key。
+// 新记录使用 Parts，旧记录使用 S3Key；两者同时存在时也全部返回，便于清理异常残留对象。
+func backupObjectKeys(record *BackupRecord) []string {
+	if record == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(record.Parts)+1)
+	seen := make(map[string]struct{}, len(record.Parts)+1)
+	appendKey := func(key string) {
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	appendKey(record.S3Key)
+	parts := append([]BackupPart(nil), record.Parts...)
+	sort.Slice(parts, func(i, j int) bool { return parts[i].Index < parts[j].Index })
+	for _, part := range parts {
+		appendKey(part.S3Key)
+	}
+	return keys
+}
+
+// deleteBackupObjects 尝试删除记录关联的所有对象，并聚合删除错误。
+func (s *BackupService) deleteBackupObjects(ctx context.Context, record *BackupRecord) error {
+	if len(backupObjectKeys(record)) == 0 {
+		return nil
 	}
 	s3Cfg, err := s.loadS3Config(ctx)
-	if err != nil || s3Cfg == nil {
+	if err != nil {
+		return err
+	}
+	if s3Cfg == nil || !s3Cfg.IsConfigured() {
+		// 兼容没有配置对象存储的旧记录：记录仍可被删除。
 		return nil
 	}
 	objectStore, err := s.getOrCreateStore(ctx, s3Cfg)
 	if err != nil {
 		return err
 	}
-	return objectStore.Delete(ctx, key)
+	return deleteBackupObjectKeys(ctx, objectStore, record)
+}
+
+func deleteBackupObjectKeys(ctx context.Context, objectStore BackupObjectStore, record *BackupRecord) error {
+	keys := backupObjectKeys(record)
+	if len(keys) == 0 {
+		return nil
+	}
+	var errs []error
+	for _, key := range keys {
+		if deleteErr := objectStore.Delete(ctx, key); deleteErr != nil {
+			errs = append(errs, fmt.Errorf("delete backup object %q: %w", key, deleteErr))
+		}
+	}
+	return errors.Join(errs...)
 }
