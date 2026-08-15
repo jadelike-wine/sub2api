@@ -8960,7 +8960,7 @@ const rateLimit429CooldownLoading = ref(true);
 const rateLimit429CooldownSaving = ref(false);
 const rateLimit429CooldownForm = reactive({
   enabled: true,
-  cooldown_seconds: 5,
+  cooldown_seconds: 60,
 });
 
 // Panel API Rate Limit 状态

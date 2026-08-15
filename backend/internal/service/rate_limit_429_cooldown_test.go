@@ -15,15 +15,27 @@ import (
 
 type rateLimit429AccountRepoStub struct {
 	mockAccountRepoForGemini
-	rateLimitCalls     int
-	lastRateLimitID    int64
-	lastRateLimitReset time.Time
+	rateLimitCalls          int
+	lastRateLimitID         int64
+	lastRateLimitReset      time.Time
+	modelRateLimitCalls     int
+	lastModelRateLimitID    int64
+	lastModelRateLimitScope string
+	lastModelRateLimitReset time.Time
 }
 
 func (r *rateLimit429AccountRepoStub) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
 	r.rateLimitCalls++
 	r.lastRateLimitID = id
 	r.lastRateLimitReset = resetAt
+	return nil
+}
+
+func (r *rateLimit429AccountRepoStub) SetModelRateLimit(_ context.Context, id int64, scope string, resetAt time.Time, _ ...string) error {
+	r.modelRateLimitCalls++
+	r.lastModelRateLimitID = id
+	r.lastModelRateLimitScope = scope
+	r.lastModelRateLimitReset = resetAt
 	return nil
 }
 
@@ -34,7 +46,7 @@ func TestGetRateLimit429CooldownSettings_DefaultsWhenNotSet(t *testing.T) {
 	settings, err := svc.GetRateLimit429CooldownSettings(context.Background())
 	require.NoError(t, err)
 	require.True(t, settings.Enabled)
-	require.Equal(t, 5, settings.CooldownSeconds)
+	require.Equal(t, 60, settings.CooldownSeconds)
 }
 
 func TestGetRateLimit429CooldownSettings_ReadsFromDB(t *testing.T) {
@@ -97,8 +109,8 @@ func TestHandle429_FallbackDisabledSkipsLocalMark(t *testing.T) {
 	require.Zero(t, accountRepo.rateLimitCalls)
 }
 
-// Anthropic 无 reset 头的 429（如 Extra usage required）也应走兜底冷却，
-// 否则账号永不冷却，调度器会让每个请求反复撞同一批 429 账号（旋转木马）。
+// Anthropic 无 reset 头的 429（如 Extra usage required）至少冷却 60 秒，
+// 否则账号会很快重新进入候选池，调度器会反复撞同一批 429 账号（旋转木马）。
 func TestHandle429_AnthropicNoResetTimeUsesFallbackCooldown(t *testing.T) {
 	accountRepo := &rateLimit429AccountRepoStub{}
 	settingRepo := newMockSettingRepo()
@@ -116,7 +128,7 @@ func TestHandle429_AnthropicNoResetTimeUsesFallbackCooldown(t *testing.T) {
 
 	require.Equal(t, 1, accountRepo.rateLimitCalls)
 	require.Equal(t, int64(45), accountRepo.lastRateLimitID)
-	require.True(t, !accountRepo.lastRateLimitReset.Before(before.Add(12*time.Second)) && !accountRepo.lastRateLimitReset.After(after.Add(12*time.Second)))
+	require.True(t, !accountRepo.lastRateLimitReset.Before(before.Add(time.Minute)) && !accountRepo.lastRateLimitReset.After(after.Add(time.Minute)))
 }
 
 // 管理端关闭兜底冷却时，Anthropic 无 reset 头的 429 保持旧行为：不标记账号。
@@ -136,6 +148,50 @@ func TestHandle429_AnthropicNoResetTimeFallbackDisabledSkipsMark(t *testing.T) {
 	require.Zero(t, accountRepo.rateLimitCalls)
 }
 
+func TestHandle429_AnthropicWorkspaceQuotaUsesLongAccountCooldown(t *testing.T) {
+	accountRepo := &rateLimit429AccountRepoStub{}
+	settingRepo := newMockSettingRepo()
+	data, _ := json.Marshal(RateLimit429CooldownSettings{Enabled: true, CooldownSeconds: 5})
+	settingRepo.data[SettingKeyRateLimit429CooldownSettings] = string(data)
+
+	settingSvc := NewSettingService(settingRepo, &config.Config{})
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+	svc.SetSettingService(settingSvc)
+
+	account := &Account{ID: 47, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+	before := time.Now()
+	svc.handle429(context.Background(), account, http.Header{}, []byte(`{"error":{"type":"invalid_request_error","message":"Workspace allocated quota exceeded, please increase your quota limit."}}`))
+	after := time.Now()
+
+	require.Equal(t, 1, accountRepo.rateLimitCalls)
+	require.Zero(t, accountRepo.modelRateLimitCalls)
+	require.True(t, !accountRepo.lastRateLimitReset.Before(before.Add(2*time.Hour)))
+	require.True(t, !accountRepo.lastRateLimitReset.After(after.Add(2*time.Hour)))
+}
+
+func TestHandle429_AnthropicTPMUsesModelCooldown(t *testing.T) {
+	accountRepo := &rateLimit429AccountRepoStub{}
+	settingRepo := newMockSettingRepo()
+	data, _ := json.Marshal(RateLimit429CooldownSettings{Enabled: true, CooldownSeconds: 5})
+	settingRepo.data[SettingKeyRateLimit429CooldownSettings] = string(data)
+
+	settingSvc := NewSettingService(settingRepo, &config.Config{})
+	svc := NewRateLimitService(accountRepo, nil, &config.Config{}, nil, nil)
+	svc.SetSettingService(settingSvc)
+
+	account := &Account{ID: 48, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+	before := time.Now()
+	svc.handle429(context.Background(), account, http.Header{}, []byte(`{"error":{"type":"invalid_request_error","message":"inference tpm exhausted"}}`), "claude-fable-5")
+	after := time.Now()
+
+	require.Zero(t, accountRepo.rateLimitCalls)
+	require.Equal(t, 1, accountRepo.modelRateLimitCalls)
+	require.Equal(t, int64(48), accountRepo.lastModelRateLimitID)
+	require.Equal(t, anthropicFableRateLimitKey, accountRepo.lastModelRateLimitScope)
+	require.True(t, !accountRepo.lastModelRateLimitReset.Before(before.Add(time.Minute)))
+	require.True(t, !accountRepo.lastModelRateLimitReset.After(after.Add(time.Minute)))
+}
+
 func TestHandle429_FallbackUsesDefaultSecondsWhenSettingServiceMissing(t *testing.T) {
 	accountRepo := &rateLimit429AccountRepoStub{}
 	cfg := &config.Config{}
@@ -148,5 +204,5 @@ func TestHandle429_FallbackUsesDefaultSecondsWhenSettingServiceMissing(t *testin
 
 	require.Equal(t, 1, accountRepo.rateLimitCalls)
 	require.Equal(t, int64(44), accountRepo.lastRateLimitID)
-	require.True(t, !accountRepo.lastRateLimitReset.Before(before.Add(5*time.Second)) && !accountRepo.lastRateLimitReset.After(after.Add(5*time.Second)))
+	require.True(t, !accountRepo.lastRateLimitReset.Before(before.Add(60*time.Second)) && !accountRepo.lastRateLimitReset.After(after.Add(60*time.Second)))
 }

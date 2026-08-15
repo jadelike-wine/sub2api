@@ -63,9 +63,20 @@ type geminiUsageTotalsBatchProvider interface {
 const geminiPrecheckCacheTTL = time.Minute
 
 const (
-	defaultRateLimit429CooldownSeconds = 5
+	defaultRateLimit429CooldownSeconds = 60
 	maxRateLimit429CooldownSeconds     = 7200
 )
+
+const (
+	anthropic429WorkspaceQuotaCooldown = 2 * time.Hour
+	anthropic429ModelCooldown          = time.Minute
+)
+
+type anthropic429NoResetPolicy struct {
+	minimumCooldown time.Duration
+	modelScoped     bool
+	reason          string
+}
 
 const (
 	openAIImageRateLimitDefaultCooldown = time.Minute
@@ -464,7 +475,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		)
 		shouldDisable = s.handle403(ctx, account, upstreamMsg, responseBody)
 	case 429:
-		s.handle429(ctx, account, headers, responseBody)
+		s.handle429(ctx, account, headers, responseBody, firstRequestedModel(requestedModel))
 		shouldDisable = false
 	case 529:
 		s.handle529(ctx, account)
@@ -1039,7 +1050,7 @@ func (s *RateLimitService) handleCustomErrorCode(ctx context.Context, account *A
 
 // handle429 处理429限流错误
 // 解析响应头获取重置时间，标记账号为限流状态
-func (s *RateLimitService) handle429(ctx context.Context, account *Account, headers http.Header, responseBody []byte) {
+func (s *RateLimitService) handle429(ctx context.Context, account *Account, headers http.Header, responseBody []byte, requestedModel ...string) {
 	// Spark 影子：限流/熔断状态 100% 由 QueryUsage(/wham/usage body 的 codex_bengalfox)驱动。
 	// /responses 的 429 携带的 x-codex-*/usage_limit_reached 是 global codex 道(plan/spec §8),
 	// 套到影子会把 spark 误耦合到 global 窗口——即便 spark 仍有配额也会被冷却到 global reset,
@@ -1125,13 +1136,13 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 			slog.Warn("rate_limit_429_no_reset_time",
 				"account_id", account.ID,
 				"platform", account.Platform,
-				"reason", "no rate limit reset time in headers, likely not a real rate limit")
-			s.apply429FallbackRateLimit(ctx, account, "anthropic_no_reset_time")
+				"reason", "upstream 429 did not include a reset time")
+			s.apply429FallbackRateLimit(ctx, account, "anthropic_no_reset_time", responseBody, firstRequestedModel(requestedModel))
 			return
 		}
 
 		// 其他平台：没有重置时间，使用可配置的秒级默认回避，避免误伤长时间不可调度。
-		s.apply429FallbackRateLimit(ctx, account, "no_reset_time")
+		s.apply429FallbackRateLimit(ctx, account, "no_reset_time", responseBody)
 		return
 	}
 
@@ -1139,7 +1150,7 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	ts, err := strconv.ParseInt(resetTimestamp, 10, 64)
 	if err != nil {
 		slog.Warn("rate_limit_reset_parse_failed", "reset_timestamp", resetTimestamp, "error", err)
-		s.apply429FallbackRateLimit(ctx, account, "reset_parse_failed")
+		s.apply429FallbackRateLimit(ctx, account, "reset_parse_failed", responseBody)
 		return
 	}
 
@@ -1162,11 +1173,33 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	slog.Info("account_rate_limited", "account_id", account.ID, "reset_at", resetAt)
 }
 
-func (s *RateLimitService) apply429FallbackRateLimit(ctx context.Context, account *Account, reason string) {
+func (s *RateLimitService) apply429FallbackRateLimit(ctx context.Context, account *Account, reason string, responseBody []byte, requestedModel ...string) {
 	cooldown, enabled := s.get429FallbackCooldown(ctx, account)
 	if !enabled {
 		slog.Info("rate_limit_429_fallback_ignored", "account_id", account.ID, "platform", account.Platform, "reason", reason)
 		return
+	}
+
+	if account.Platform == PlatformAnthropic && reason == "anthropic_no_reset_time" {
+		policy := classifyAnthropic429NoReset(responseBody)
+		if policy != nil {
+			if cooldown < policy.minimumCooldown {
+				cooldown = policy.minimumCooldown
+			}
+			if policy.modelScoped {
+				if scope := anthropic429ModelRateLimitScope(ctx, account, firstRequestedModel(requestedModel)); scope != "" {
+					resetAt := time.Now().Add(cooldown)
+					s.notifyAccountSchedulingBlocked(account, resetAt, "429_fallback")
+					if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, scope, resetAt, policy.reason); err != nil {
+						slog.Warn("rate_limit_model_fallback_set_failed", "account_id", account.ID, "scope", scope, "error", err)
+					} else {
+						slog.Warn("rate_limit_429_model_fallback_used", "account_id", account.ID, "platform", account.Platform, "scope", scope, "reason", policy.reason, "cooldown", cooldown.String())
+					}
+					return
+				}
+			}
+			reason = policy.reason
+		}
 	}
 
 	resetAt := time.Now().Add(cooldown)
@@ -1175,6 +1208,56 @@ func (s *RateLimitService) apply429FallbackRateLimit(ctx context.Context, accoun
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
 		slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
 	}
+}
+
+func classifyAnthropic429NoReset(responseBody []byte) *anthropic429NoResetPolicy {
+	message := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(responseBody)))
+	if message == "" {
+		return &anthropic429NoResetPolicy{
+			minimumCooldown: anthropic429ModelCooldown,
+			reason:          "anthropic_no_reset_time",
+		}
+	}
+
+	switch {
+	case strings.Contains(message, "workspace allocated quota exceeded"),
+		strings.Contains(message, "allocated quota exceeded"):
+		return &anthropic429NoResetPolicy{
+			minimumCooldown: anthropic429WorkspaceQuotaCooldown,
+			reason:          "anthropic_workspace_quota_exhausted",
+		}
+	case strings.Contains(message, "inference tpm exhausted"),
+		strings.Contains(message, "tpm exhausted"):
+		return &anthropic429NoResetPolicy{
+			minimumCooldown: anthropic429ModelCooldown,
+			modelScoped:     true,
+			reason:          "anthropic_inference_tpm_exhausted",
+		}
+	case strings.Contains(message, "request rate increased too quickly"),
+		strings.Contains(message, "scale requests more smoothly"):
+		return &anthropic429NoResetPolicy{
+			minimumCooldown: anthropic429ModelCooldown,
+			modelScoped:     true,
+			reason:          "anthropic_burst_rate_limited",
+		}
+	default:
+		return &anthropic429NoResetPolicy{
+			minimumCooldown: anthropic429ModelCooldown,
+			reason:          "anthropic_no_reset_time",
+		}
+	}
+}
+
+func anthropic429ModelRateLimitScope(ctx context.Context, account *Account, requestedModel string) string {
+	model := strings.TrimSpace(requestedModel)
+	if account == nil || model == "" {
+		return ""
+	}
+	model = strings.TrimSpace(modelRateLimitKeyForUpstreamModelNotFound(ctx, account, model))
+	if isAnthropicFableModel(model) {
+		return anthropicFableRateLimitKey
+	}
+	return model
 }
 
 func (s *RateLimitService) get429FallbackCooldown(ctx context.Context, account *Account) (time.Duration, bool) {
