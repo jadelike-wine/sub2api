@@ -43,9 +43,11 @@ func ProvidePricingService(cfg *config.Config, remoteClient PricingRemoteClient)
 	return svc, nil
 }
 
-// ProvideUpdateService creates UpdateService with BuildInfo
-func ProvideUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, buildInfo BuildInfo) *UpdateService {
-	return NewUpdateService(cache, githubClient, buildInfo.Version, buildInfo.BuildType)
+// ProvideUpdateService creates UpdateService with BuildInfo and registers
+// update.repo (a fork release source) as an additional selectable source.
+func ProvideUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, buildInfo BuildInfo, cfg *config.Config) *UpdateService {
+	return NewUpdateService(cache, githubClient, buildInfo.Version, buildInfo.BuildType).
+		WithConfiguredRepo(cfg.Update.Repo)
 }
 
 // ProvideEmailQueueService creates EmailQueueService with default worker count

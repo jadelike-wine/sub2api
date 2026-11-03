@@ -20,6 +20,9 @@ export default {
   // Version Badge
   version: {
     currentVersion: '当前版本',
+    updateSource: '更新来源',
+    updateSourceUpstream: '上游',
+    updateSourceHint: '检测与下载都来自所选仓库，Fork 需自行发布 Release 产物',
     latestVersion: '最新版本',
     upToDate: '已是最新版本',
     updateAvailable: '有新版本可用！',

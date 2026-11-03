@@ -78,6 +78,30 @@
 
             <!-- Content -->
             <template v-else>
+              <!-- Release source: shown once update.repo registers a second source -->
+              <div v-if="sources.length > 1" class="mb-4">
+                <label
+                  for="update-source-select"
+                  class="mb-1 block text-xs font-medium text-gray-500 dark:text-dark-400"
+                >
+                  {{ t('version.updateSource') }}
+                </label>
+                <select
+                  id="update-source-select"
+                  :value="activeSource"
+                  :disabled="loading || updating || rollingBack"
+                  class="w-full rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-700 transition-colors hover:border-gray-300 focus:border-primary-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-dark-600 dark:bg-dark-700 dark:text-dark-200 dark:hover:border-dark-500"
+                  @change="onSourceSelect"
+                >
+                  <option v-for="source in sources" :key="source" :value="source">
+                    {{ sourceLabel(source) }}
+                  </option>
+                </select>
+                <p class="mt-1 text-[11px] leading-4 text-gray-400 dark:text-dark-500">
+                  {{ t('version.updateSourceHint') }}
+                </p>
+              </div>
+
               <!-- Version display - centered and prominent -->
               <div class="mb-4 text-center">
                 <div class="inline-flex items-center gap-2">
@@ -651,7 +675,10 @@ import {
 import { useClipboard } from '@/composables/useClipboard'
 import Icon from '@/components/icons/Icon.vue'
 
-const GITHUB_REPO = 'Wei-Shaw/sub2api'
+// Fallback for the manual rollback command when the backend has not reported a
+// source yet; the panel otherwise uses the source it actually checked.
+const UPSTREAM_REPO = 'Wei-Shaw/sub2api'
+const SOURCE_STORAGE_KEY = 'sub2api.updateSourceRepo'
 // Docker Hub image published by CI (tags carry no "v" prefix, e.g. weishaw/sub2api:0.1.146)
 const DOCKER_IMAGE = 'weishaw/sub2api'
 
@@ -676,6 +703,18 @@ const latestVersion = computed(() => appStore.latestVersion)
 const hasUpdate = computed(() => appStore.hasUpdate)
 const releaseInfo = computed(() => appStore.releaseInfo)
 const buildType = computed(() => appStore.buildType)
+
+// The source the operator picked; seeded from localStorage, then from the
+// source the server actually used.
+const selectedRepo = ref('')
+const sources = computed(() => appStore.availableRepos)
+// Where the displayed numbers came from; falls back to what the operator picked
+// (and then to the first option) while a request is in flight or has failed.
+const activeSource = computed(
+  () => appStore.updateRepo || selectedRepo.value || sources.value[0] || ''
+)
+// The copyable manual commands must name the repository the versions came from.
+const releaseRepo = computed(() => activeSource.value || UPSTREAM_REPO)
 
 // Update process states (local to this component)
 const updating = ref(false)
@@ -710,7 +749,7 @@ const manualTabs = computed(() => [
 const scriptRollbackCommand = computed(() => {
   if (!selectedRollbackVersion.value) return ''
   const tag = `v${selectedRollbackVersion.value}`
-  return `curl -sSL https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/deploy/install.sh | sudo bash -s -- rollback ${tag}`
+  return `curl -sSL https://raw.githubusercontent.com/${releaseRepo.value}/${tag}/deploy/install.sh | sudo bash -s -- rollback ${tag}`
 })
 
 const dockerRollbackCommand = computed(() => {
@@ -739,6 +778,48 @@ function closeDropdown() {
   dropdownOpen.value = false
 }
 
+function storedSource(): string {
+  try {
+    return localStorage.getItem(SOURCE_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function persistSource(repo: string) {
+  try {
+    if (repo) {
+      localStorage.setItem(SOURCE_STORAGE_KEY, repo)
+    } else {
+      localStorage.removeItem(SOURCE_STORAGE_KEY)
+    }
+  } catch {
+    // Storage is a convenience here; the panel works without it.
+  }
+}
+
+function sourceLabel(repo: string): string {
+  return repo === UPSTREAM_REPO ? `${repo} (${t('version.updateSourceUpstream')})` : repo
+}
+
+// Release versions differ per source, so a switch re-checks from scratch.
+async function switchSource(repo: string) {
+  // Compare against the operator's choice, not the store echo: a failed request
+  // leaves the echoed source unchanged and would otherwise block re-selecting.
+  if (!repo || repo === selectedRepo.value || loading.value) return
+  selectedRepo.value = repo
+  persistSource(repo)
+  updateError.value = ''
+  updateSuccess.value = false
+  needRestart.value = false
+  resetRollbackState()
+  await appStore.fetchVersion(true, repo)
+}
+
+function onSourceSelect(event: Event) {
+  switchSource((event.target as HTMLSelectElement).value)
+}
+
 async function refreshVersion(force = true) {
   if (!isAdmin.value) return
 
@@ -759,7 +840,7 @@ async function handleUpdate() {
   updateSuccess.value = false
 
   try {
-    const result = await performUpdate()
+    const result = await performUpdate(appStore.updateRepo)
     successKind.value = 'update'
     updateSuccess.value = true
     needRestart.value = result.need_restart
@@ -801,7 +882,7 @@ async function loadRollbackVersions() {
   rollbackVersionsLoading.value = true
   rollbackVersionsError.value = ''
   try {
-    const data = await getRollbackVersions()
+    const data = await getRollbackVersions(appStore.updateRepo)
     rollbackVersions.value = data.versions || []
   } catch (error: unknown) {
     const err = error as { response?: { data?: { message?: string } }; message?: string }
@@ -833,7 +914,7 @@ async function handleRollback() {
   rollbackError.value = ''
 
   try {
-    const result = await rollbackAPI(selectedRollbackVersion.value)
+    const result = await rollbackAPI(selectedRollbackVersion.value, appStore.updateRepo)
     successKind.value = 'rollback'
     updateSuccess.value = true
     needRestart.value = result.need_restart
@@ -909,10 +990,20 @@ function handleClickOutside(event: MouseEvent) {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   if (isAdmin.value) {
+    const stored = storedSource()
+    selectedRepo.value = stored
     // Use cached version if available, otherwise fetch
-    appStore.fetchVersion(false)
+    let info = await appStore.fetchVersion(false, stored)
+    if (!info && stored) {
+      // A remembered source can stop existing (update.repo removed), in which
+      // case the request is rejected; fall back instead of showing an empty panel.
+      selectedRepo.value = ''
+      persistSource('')
+      info = await appStore.fetchVersion(false, '')
+    }
+    if (info?.repo) selectedRepo.value = info.repo
   }
   document.addEventListener('click', handleClickOutside)
 })

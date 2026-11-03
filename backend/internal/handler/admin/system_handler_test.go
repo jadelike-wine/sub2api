@@ -34,15 +34,21 @@ type systemHandlerUpdateServiceStub struct {
 	rollbackVersions      []service.RollbackVersion
 	rollbackVersionsErr   error
 	rollbackVersionsCall  int
+	rollbackVersionsRepo  string
+	rollbackToRepos       []string
+	checkRepos            []string
+	performRepo           string
 }
 
-func (s *systemHandlerUpdateServiceStub) CheckUpdate(_ context.Context, force bool) (*service.UpdateInfo, error) {
+func (s *systemHandlerUpdateServiceStub) CheckUpdate(_ context.Context, force bool, repo string) (*service.UpdateInfo, error) {
 	s.checkForces = append(s.checkForces, force)
+	s.checkRepos = append(s.checkRepos, repo)
 	return s.updateInfo, s.checkErr
 }
 
-func (s *systemHandlerUpdateServiceStub) PerformUpdate(ctx context.Context) error {
+func (s *systemHandlerUpdateServiceStub) PerformUpdate(ctx context.Context, repo string) error {
 	s.performCall++
+	s.performRepo = repo
 	s.performCtxErr = ctx.Err()
 	_, s.performHasDeadline = ctx.Deadline()
 	return s.performErr
@@ -53,13 +59,15 @@ func (s *systemHandlerUpdateServiceStub) Rollback() error {
 	return nil
 }
 
-func (s *systemHandlerUpdateServiceStub) ListRollbackVersions(context.Context) ([]service.RollbackVersion, error) {
+func (s *systemHandlerUpdateServiceStub) ListRollbackVersions(_ context.Context, repo string) ([]service.RollbackVersion, error) {
 	s.rollbackVersionsCall++
+	s.rollbackVersionsRepo = repo
 	return s.rollbackVersions, s.rollbackVersionsErr
 }
 
-func (s *systemHandlerUpdateServiceStub) RollbackToVersion(ctx context.Context, version string) error {
+func (s *systemHandlerUpdateServiceStub) RollbackToVersion(ctx context.Context, repo, version string) error {
 	s.rollbackToCall++
+	s.rollbackToRepos = append(s.rollbackToRepos, repo)
 	s.rollbackToCtxErr = ctx.Err()
 	_, s.rollbackToHasDeadline = ctx.Deadline()
 	s.rollbackToVersions = append(s.rollbackToVersions, version)
@@ -321,4 +329,45 @@ func TestSystemHandlerGetRollbackVersionsError(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+// The admin panel lets an operator pick between upstream and a configured fork,
+// so ?repo= must reach every source-aware operation.
+func TestSystemHandlerPassesUpdateSourceRepoThrough(t *testing.T) {
+	updateSvc := &systemHandlerUpdateServiceStub{
+		updateInfo: &service.UpdateInfo{CurrentVersion: "0.1.147", LatestVersion: "0.1.147"},
+	}
+	repo := newMemoryIdempotencyRepoStub()
+	router := newSystemHandlerTestRouter(t, updateSvc, repo)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/rollback-versions?repo=fork-owner/sub2api", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "fork-owner/sub2api", updateSvc.rollbackVersionsRepo)
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/update?repo=fork-owner/sub2api", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "fork-owner/sub2api", updateSvc.performRepo)
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/rollback?repo=fork-owner/sub2api", strings.NewReader(`{"version":"0.1.146"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, []string{"fork-owner/sub2api"}, updateSvc.rollbackToRepos)
+	require.Equal(t, []string{"0.1.146"}, updateSvc.rollbackToVersions)
+}
+
+func TestSystemHandlerGetRollbackVersionsRejectsUnknownSource(t *testing.T) {
+	updateSvc := &systemHandlerUpdateServiceStub{
+		rollbackVersionsErr: service.ErrUpdateRepoNotAllowed,
+	}
+	repo := newMemoryIdempotencyRepoStub()
+	router := newSystemHandlerTestRouter(t, updateSvc, repo)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/rollback-versions?repo=someone-else/sub2api", nil))
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }

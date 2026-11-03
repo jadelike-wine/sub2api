@@ -11,33 +11,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// updateServiceCacheStub keeps one entry per release source, mirroring the
+// per-repo scoping the Redis implementation applies.
 type updateServiceCacheStub struct {
-	data string
+	entries map[string]string
 }
 
-func (s *updateServiceCacheStub) GetUpdateInfo(context.Context) (string, error) {
-	if s.data == "" {
-		return "", errors.New("cache miss")
+func (s *updateServiceCacheStub) GetUpdateInfo(_ context.Context, repo string) (string, error) {
+	if data, ok := s.entries[repo]; ok && data != "" {
+		return data, nil
 	}
-	return s.data, nil
+	return "", errors.New("cache miss")
 }
 
-func (s *updateServiceCacheStub) SetUpdateInfo(_ context.Context, data string, _ time.Duration) error {
-	s.data = data
+func (s *updateServiceCacheStub) SetUpdateInfo(_ context.Context, repo string, data string, _ time.Duration) error {
+	if s.entries == nil {
+		s.entries = map[string]string{}
+	}
+	s.entries[repo] = data
 	return nil
 }
 
 type updateServiceGitHubClientStub struct {
-	release        *GitHubRelease
-	recentReleases []*GitHubRelease
-	recentErr      error
+	release         *GitHubRelease
+	recentReleases  []*GitHubRelease
+	recentErr       error
+	latestRepos     []string
+	recentReposList []string
 }
 
-func (s *updateServiceGitHubClientStub) FetchLatestRelease(context.Context, string) (*GitHubRelease, error) {
+func (s *updateServiceGitHubClientStub) FetchLatestRelease(_ context.Context, repo string) (*GitHubRelease, error) {
+	s.latestRepos = append(s.latestRepos, repo)
 	return s.release, nil
 }
 
-func (s *updateServiceGitHubClientStub) FetchRecentReleases(context.Context, string, int) ([]*GitHubRelease, error) {
+func (s *updateServiceGitHubClientStub) FetchRecentReleases(_ context.Context, repo string, _ int) ([]*GitHubRelease, error) {
+	s.recentReposList = append(s.recentReposList, repo)
 	return s.recentReleases, s.recentErr
 }
 
@@ -62,7 +71,7 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 		"release",
 	)
 
-	err := svc.PerformUpdate(context.Background())
+	err := svc.PerformUpdate(context.Background(), "")
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrNoUpdateAvailable))
@@ -92,7 +101,7 @@ func TestUpdateServiceListRollbackVersionsFiltersAndCaps(t *testing.T) {
 	}
 	svc := newRollbackTestService("0.1.147", releases)
 
-	versions, err := svc.ListRollbackVersions(context.Background())
+	versions, err := svc.ListRollbackVersions(context.Background(), "")
 
 	require.NoError(t, err)
 	require.Len(t, versions, 3)
@@ -109,7 +118,7 @@ func TestUpdateServiceListRollbackVersionsSortsUnorderedInput(t *testing.T) {
 	}
 	svc := newRollbackTestService("0.1.147", releases)
 
-	versions, err := svc.ListRollbackVersions(context.Background())
+	versions, err := svc.ListRollbackVersions(context.Background(), "")
 
 	require.NoError(t, err)
 	require.Len(t, versions, 3)
@@ -125,7 +134,7 @@ func TestUpdateServiceListRollbackVersionsEmptyWhenNoneOlder(t *testing.T) {
 	}
 	svc := newRollbackTestService("0.1.147", releases)
 
-	versions, err := svc.ListRollbackVersions(context.Background())
+	versions, err := svc.ListRollbackVersions(context.Background(), "")
 
 	require.NoError(t, err)
 	require.Empty(t, versions)
@@ -139,7 +148,7 @@ func TestUpdateServiceListRollbackVersionsPropagatesFetchError(t *testing.T) {
 		"release",
 	)
 
-	_, err := svc.ListRollbackVersions(context.Background())
+	_, err := svc.ListRollbackVersions(context.Background(), "")
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "github unavailable")
@@ -165,7 +174,7 @@ func TestUpdateServiceRollbackToVersionRejectsDisallowedTargets(t *testing.T) {
 		"0.1.142",  // older than the 3 most recent
 		"9.9.9",    // nonexistent
 	} {
-		err := svc.RollbackToVersion(context.Background(), target)
+		err := svc.RollbackToVersion(context.Background(), "", target)
 		require.ErrorIs(t, err, ErrRollbackVersionNotAllowed, "target %q should be rejected", target)
 	}
 }
@@ -179,9 +188,68 @@ func TestUpdateServiceRollbackToVersionAcceptsVPrefix(t *testing.T) {
 	}
 	svc := newRollbackTestService("0.1.147", releases)
 
-	err := svc.RollbackToVersion(context.Background(), "v0.1.146")
+	err := svc.RollbackToVersion(context.Background(), "", "v0.1.146")
 
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrRollbackVersionNotAllowed)
 	require.Contains(t, err.Error(), "no compatible release found")
+}
+
+func TestUpdateServiceSourceSelectionAllowlist(t *testing.T) {
+	svc := newRollbackTestService("0.1.147", nil).WithConfiguredRepo("fork-owner/sub2api")
+
+	require.Equal(t, []string{defaultGitHubRepo, "fork-owner/sub2api"}, svc.Sources())
+
+	repo, err := svc.resolveRepo("")
+	require.NoError(t, err)
+	require.Equal(t, "fork-owner/sub2api", repo, "configured fork becomes the default source")
+
+	repo, err = svc.resolveRepo(defaultGitHubRepo)
+	require.NoError(t, err)
+	require.Equal(t, defaultGitHubRepo, repo, "upstream stays selectable")
+
+	repo, err = svc.resolveRepo("https://github.com/fork-owner/sub2api/releases/tag/v0.1.176")
+	require.NoError(t, err)
+	require.Equal(t, "fork-owner/sub2api", repo, "a pasted release URL maps onto the same source")
+
+	for _, rejected := range []string{"someone-else/sub2api", "fork-owner", "a/b/c", "fork-owner/..", "not a repo"} {
+		_, err := svc.resolveRepo(rejected)
+		require.Error(t, err, "%q must not resolve", rejected)
+	}
+}
+
+func TestUpdateServiceInvalidConfiguredRepoIsIgnored(t *testing.T) {
+	svc := newRollbackTestService("0.1.147", nil).WithConfiguredRepo("https://example.com/evil")
+
+	require.Equal(t, []string{defaultGitHubRepo}, svc.Sources())
+	repo, err := svc.resolveRepo("")
+	require.NoError(t, err)
+	require.Equal(t, defaultGitHubRepo, repo)
+}
+
+func TestUpdateServiceCheckUpdateCachesPerSource(t *testing.T) {
+	cache := &updateServiceCacheStub{}
+	client := &updateServiceGitHubClientStub{release: &GitHubRelease{TagName: "v0.1.148"}}
+	svc := NewUpdateService(cache, client, "0.1.147", "release").WithConfiguredRepo("fork-owner/sub2api")
+
+	forkInfo, err := svc.CheckUpdate(context.Background(), false, "")
+	require.NoError(t, err)
+	require.Equal(t, "fork-owner/sub2api", forkInfo.Repo)
+	require.Equal(t, []string{defaultGitHubRepo, "fork-owner/sub2api"}, forkInfo.AvailableRepos)
+	require.True(t, forkInfo.HasUpdate)
+
+	// Switching source must refetch instead of reusing the other source's entry.
+	upstreamInfo, err := svc.CheckUpdate(context.Background(), false, defaultGitHubRepo)
+	require.NoError(t, err)
+	require.Equal(t, defaultGitHubRepo, upstreamInfo.Repo)
+	require.Equal(t, []string{"fork-owner/sub2api", defaultGitHubRepo}, client.latestRepos)
+
+	require.Contains(t, cache.entries, "fork-owner/sub2api")
+	require.Contains(t, cache.entries, defaultGitHubRepo)
+
+	// Now both sources are warm; a third check stays cached.
+	cached, err := svc.CheckUpdate(context.Background(), false, "fork-owner/sub2api")
+	require.NoError(t, err)
+	require.True(t, cached.Cached)
+	require.Len(t, client.latestRepos, 2)
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/sysutil"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -44,11 +45,11 @@ func systemUpdateContext(ctx context.Context) (context.Context, context.CancelFu
 }
 
 type systemUpdateService interface {
-	CheckUpdate(ctx context.Context, force bool) (*service.UpdateInfo, error)
-	PerformUpdate(ctx context.Context) error
+	CheckUpdate(ctx context.Context, force bool, repo string) (*service.UpdateInfo, error)
+	PerformUpdate(ctx context.Context, repo string) error
 	Rollback() error
-	ListRollbackVersions(ctx context.Context) ([]service.RollbackVersion, error)
-	RollbackToVersion(ctx context.Context, version string) error
+	ListRollbackVersions(ctx context.Context, repo string) ([]service.RollbackVersion, error)
+	RollbackToVersion(ctx context.Context, repo, version string) error
 }
 
 // NewSystemHandler creates a new SystemHandler
@@ -62,18 +63,21 @@ func NewSystemHandler(updateSvc systemUpdateService, lockSvc *service.SystemOper
 // GetVersion returns the current version
 // GET /api/v1/admin/system/version
 func (h *SystemHandler) GetVersion(c *gin.Context) {
-	info, _ := h.updateSvc.CheckUpdate(c.Request.Context(), false)
+	info, _ := h.updateSvc.CheckUpdate(c.Request.Context(), false, "")
 	response.Success(c, gin.H{
 		"version": info.CurrentVersion,
 	})
 }
 
 // CheckUpdates checks for available updates
-// GET /api/v1/admin/system/check-updates
+// GET /api/v1/admin/system/check-updates?force=true&repo=owner/name
 func (h *SystemHandler) CheckUpdates(c *gin.Context) {
 	force := c.Query("force") == "true"
-	info, err := h.updateSvc.CheckUpdate(c.Request.Context(), force)
+	info, err := h.updateSvc.CheckUpdate(c.Request.Context(), force, c.Query("repo"))
 	if err != nil {
+		if writeUpdateSourceError(c, err) {
+			return
+		}
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -83,8 +87,9 @@ func (h *SystemHandler) CheckUpdates(c *gin.Context) {
 // PerformUpdate downloads and applies the update
 // POST /api/v1/admin/system/update
 func (h *SystemHandler) PerformUpdate(c *gin.Context) {
+	repo := c.Query("repo")
 	operationID := buildSystemOperationID(c, "update")
-	payload := gin.H{"operation_id": operationID}
+	payload := gin.H{"operation_id": operationID, "repo": repo}
 	executeAdminIdempotentJSON(c, "admin.system.update", payload, service.DefaultSystemOperationIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		lock, release, err := h.acquireSystemLock(ctx, operationID)
 		if err != nil {
@@ -99,9 +104,9 @@ func (h *SystemHandler) PerformUpdate(c *gin.Context) {
 		updateCtx, cancel := systemUpdateContext(ctx)
 		defer cancel()
 
-		if err := h.updateSvc.PerformUpdate(updateCtx); err != nil {
+		if err := h.updateSvc.PerformUpdate(updateCtx, repo); err != nil {
 			if errors.Is(err, service.ErrNoUpdateAvailable) {
-				info, checkErr := h.updateSvc.CheckUpdate(updateCtx, false)
+				info, checkErr := h.updateSvc.CheckUpdate(updateCtx, false, repo)
 				if checkErr != nil {
 					releaseReason = "SYSTEM_UPDATE_FAILED"
 					return nil, checkErr
@@ -131,8 +136,11 @@ func (h *SystemHandler) PerformUpdate(c *gin.Context) {
 // GetRollbackVersions lists versions available for rollback
 // GET /api/v1/admin/system/rollback-versions
 func (h *SystemHandler) GetRollbackVersions(c *gin.Context) {
-	versions, err := h.updateSvc.ListRollbackVersions(c.Request.Context())
+	versions, err := h.updateSvc.ListRollbackVersions(c.Request.Context(), c.Query("repo"))
 	if err != nil {
+		if writeUpdateSourceError(c, err) {
+			return
+		}
 		response.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -157,13 +165,14 @@ func (h *SystemHandler) Rollback(c *gin.Context) {
 		}
 	}
 	targetVersion := strings.TrimSpace(req.Version)
+	repo := c.Query("repo")
 
 	operation := "rollback"
 	if targetVersion != "" {
 		operation = "rollback:" + targetVersion
 	}
 	operationID := buildSystemOperationID(c, operation)
-	payload := gin.H{"operation_id": operationID, "version": targetVersion}
+	payload := gin.H{"operation_id": operationID, "version": targetVersion, "repo": repo}
 	executeAdminIdempotentJSON(c, "admin.system.rollback", payload, service.DefaultSystemOperationIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		lock, release, err := h.acquireSystemLock(ctx, operationID)
 		if err != nil {
@@ -179,7 +188,7 @@ func (h *SystemHandler) Rollback(c *gin.Context) {
 			// 指定版本回退同样要下载完整二进制，与更新一样和请求生命周期解耦。
 			rollbackCtx, cancel := systemUpdateContext(ctx)
 			defer cancel()
-			err = h.updateSvc.RollbackToVersion(rollbackCtx, targetVersion)
+			err = h.updateSvc.RollbackToVersion(rollbackCtx, repo, targetVersion)
 		} else {
 			err = h.updateSvc.Rollback()
 		}
@@ -226,6 +235,17 @@ func (h *SystemHandler) RestartService(c *gin.Context) {
 			"operation_id": lock.OperationID(),
 		}, nil
 	})
+}
+
+// writeUpdateSourceError reports a rejected update source as 400 instead of
+// letting it fall through as a server fault; returns false for other errors.
+func writeUpdateSourceError(c *gin.Context, err error) bool {
+	switch infraerrors.Code(err) {
+	case infraerrors.Code(service.ErrUpdateRepoInvalid), infraerrors.Code(service.ErrUpdateRepoNotAllowed):
+		response.BadRequest(c, err.Error())
+		return true
+	}
+	return false
 }
 
 func (h *SystemHandler) acquireSystemLock(

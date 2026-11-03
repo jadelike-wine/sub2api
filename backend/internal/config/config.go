@@ -237,6 +237,11 @@ type UpdateConfig struct {
 	// 支持 http/https/socks5/socks5h 协议
 	// 例如: "http://127.0.0.1:7890", "socks5://127.0.0.1:1080"
 	ProxyURL string `mapstructure:"proxy_url"`
+	// Repo 覆盖在线更新的来源仓库，供 fork 自更新使用。
+	// 格式 "owner/name"（也接受粘贴 github.com 上的 release 链接）。
+	// 留空时只允许上游 Wei-Shaw/sub2api；配置后管理端可在两个来源之间切换，
+	// 且该来源成为默认来源。环境变量 UPDATE_REPO 等效。
+	Repo string `mapstructure:"repo"`
 }
 
 type IdempotencyConfig struct {
@@ -2706,6 +2711,7 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("gateway.session_idle_timeout_minutes", 0)
 	viper.SetDefault("gateway.user_message_queue.mode", "")
 	viper.SetDefault("update.proxy_url", "")
+	viper.SetDefault("update.repo", "")
 
 	// sticky_escape_enabled is the one exception to the zero-value rule: its
 	// effective default is true, applied post-unmarshal via a viper.IsSet guard.

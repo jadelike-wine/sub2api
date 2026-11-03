@@ -43,6 +43,10 @@ export const useAppStore = defineStore('app', () => {
   const hasUpdate = ref<boolean>(false)
   const buildType = ref<string>('source')
   const releaseInfo = ref<ReleaseInfo | null>(null)
+  // Release source the version numbers above came from, plus the sources an
+  // admin may switch between (upstream first).
+  const updateRepo = ref<string>('')
+  const availableRepos = ref<string[]>([])
 
   // Auto-incrementing ID for toasts
   let toastIdCounter = 0
@@ -239,17 +243,23 @@ export const useAppStore = defineStore('app', () => {
   /**
    * Fetch version info (uses cache unless force=true)
    * @param force - Force refresh from API
+   * @param repo - Release source to check; omit to keep the source already shown
    */
-  async function fetchVersion(force = false): Promise<VersionInfo | null> {
-    // Return cached data if available and not forcing refresh
-    if (versionLoaded.value && !force) {
+  async function fetchVersion(force = false, repo?: string): Promise<VersionInfo | null> {
+    const requestedRepo = repo ?? updateRepo.value
+
+    // The cache belongs to the source it was fetched from, so it only answers
+    // when the caller is not asking for a different source.
+    if (versionLoaded.value && !force && requestedRepo === updateRepo.value) {
       return {
         current_version: currentVersion.value,
         latest_version: latestVersion.value,
         has_update: hasUpdate.value,
         build_type: buildType.value,
         release_info: releaseInfo.value || undefined,
-        cached: true
+        cached: true,
+        repo: updateRepo.value,
+        available_repos: availableRepos.value
       }
     }
 
@@ -260,12 +270,14 @@ export const useAppStore = defineStore('app', () => {
 
     versionLoading.value = true
     try {
-      const data = await checkUpdatesAPI(force)
+      const data = await checkUpdatesAPI(force, requestedRepo)
       currentVersion.value = data.current_version
       latestVersion.value = data.latest_version
       hasUpdate.value = data.has_update
       buildType.value = data.build_type || 'source'
       releaseInfo.value = data.release_info || null
+      updateRepo.value = data.repo || requestedRepo
+      availableRepos.value = data.available_repos?.length ? data.available_repos : [updateRepo.value]
       versionLoaded.value = true
       return data
     } catch (error) {
@@ -463,6 +475,8 @@ export const useAppStore = defineStore('app', () => {
     hasUpdate,
     buildType,
     releaseInfo,
+    updateRepo,
+    availableRepos,
 
     // Computed
     hasActiveToasts,

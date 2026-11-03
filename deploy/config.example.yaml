@@ -1291,6 +1291,24 @@ update:
   # 留空表示直连（适用于海外服务器）
   proxy_url: ""
 
+  # Release source used by the in-place updater, format "owner/name".
+  # 在线更新所使用的 release 来源仓库，格式 "owner/name"。
+  # Empty = upstream only (Wei-Shaw/sub2api).
+  # 留空 = 仅上游 Wei-Shaw/sub2api。
+  # Set to your fork to (a) make it the default source and (b) let the admin
+  # version panel switch between upstream and the fork. The fork must publish
+  # release assets with the same naming as goreleaser, i.e.
+  # sub2api_{version}_{os}_{arch}.tar.gz plus checksums.txt, otherwise the
+  # updater reports "no compatible release found".
+  # 设为你的 fork 后：该 fork 成为默认来源，且管理端版本面板可在上游与 fork 之间切换。
+  # Fork 必须发布与 goreleaser 同名的产物（sub2api_{版本}_{系统}_{架构}.tar.gz 与
+  # checksums.txt），否则会提示 "no compatible release found"。
+  # Downloads are still restricted to github.com / objects.githubusercontent.com,
+  # so third-party mirror URLs cannot be used here.
+  # 下载域名仍限制为 github.com / objects.githubusercontent.com，无法填写第三方加速镜像地址。
+  # Env: UPDATE_REPO
+  repo: ""
+
 # =============================================================================
 # Image Storage (异步图片任务结果对象存储)
 # =============================================================================

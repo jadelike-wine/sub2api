@@ -19,6 +19,20 @@ export interface VersionInfo {
   cached: boolean
   warning?: string
   build_type: string // "source" for manual builds, "release" for CI builds
+  /** Release source these numbers came from, e.g. "Wei-Shaw/sub2api". */
+  repo: string
+  /** Selectable sources (upstream first); length 1 when update.repo is unset. */
+  available_repos?: string[]
+}
+
+/**
+ * Build the `?repo=` query for source-aware endpoints. An empty source means the
+ * deployment default configured under update.repo.
+ */
+function sourceParams(repo?: string, extra?: Record<string, string>) {
+  const params: Record<string, string> = { ...(extra ?? {}) }
+  if (repo) params.repo = repo
+  return Object.keys(params).length > 0 ? params : undefined
 }
 
 /**
@@ -32,10 +46,11 @@ export async function getVersion(): Promise<{ version: string }> {
 /**
  * Check for updates
  * @param force - Force refresh from GitHub API
+ * @param repo - Release source to check; omit for the deployment default
  */
-export async function checkUpdates(force = false): Promise<VersionInfo> {
+export async function checkUpdates(force = false, repo?: string): Promise<VersionInfo> {
   const { data } = await apiClient.get<VersionInfo>('/admin/system/check-updates', {
-    params: force ? { force: 'true' } : undefined
+    params: sourceParams(repo, force ? { force: 'true' } : undefined)
   })
   return data
 }
@@ -54,9 +69,10 @@ export interface RollbackVersionInfo {
 /**
  * Get versions available for rollback (up to 3 versions older than current)
  */
-export async function getRollbackVersions(): Promise<{ versions: RollbackVersionInfo[] }> {
+export async function getRollbackVersions(repo?: string): Promise<{ versions: RollbackVersionInfo[] }> {
   const { data } = await apiClient.get<{ versions: RollbackVersionInfo[] }>(
-    '/admin/system/rollback-versions'
+    '/admin/system/rollback-versions',
+    { params: sourceParams(repo) }
   )
   return data
 }
@@ -71,10 +87,11 @@ const UPDATE_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
 
 /**
  * Perform system update
- * Downloads and applies the latest version
+ * Downloads and applies the latest version from the selected release source
  */
-export async function performUpdate(): Promise<UpdateResult> {
+export async function performUpdate(repo?: string): Promise<UpdateResult> {
   const { data } = await apiClient.post<UpdateResult>('/admin/system/update', undefined, {
+    params: sourceParams(repo),
     timeout: UPDATE_REQUEST_TIMEOUT_MS
   })
   return data
@@ -83,12 +100,13 @@ export async function performUpdate(): Promise<UpdateResult> {
 /**
  * Rollback to a previous version
  * @param version - Target version (e.g. "0.1.146"); omit to restore the local backup binary
+ * @param repo - Release source to download the target from
  */
-export async function rollback(version?: string): Promise<UpdateResult> {
+export async function rollback(version?: string, repo?: string): Promise<UpdateResult> {
   const { data } = await apiClient.post<UpdateResult>(
     '/admin/system/rollback',
     version ? { version } : undefined,
-    { timeout: UPDATE_REQUEST_TIMEOUT_MS }
+    { params: sourceParams(repo), timeout: UPDATE_REQUEST_TIMEOUT_MS }
   )
   return data
 }

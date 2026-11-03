@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -25,12 +27,24 @@ import (
 var (
 	ErrNoUpdateAvailable         = infraerrors.Conflict("ALREADY_UP_TO_DATE", "no update available; current version is latest")
 	ErrRollbackVersionNotAllowed = infraerrors.BadRequest("ROLLBACK_VERSION_NOT_ALLOWED", "version is not in the allowed rollback list")
+	ErrUpdateRepoInvalid         = infraerrors.BadRequest("UPDATE_REPO_INVALID", "update source repository must look like owner/name")
+	ErrUpdateRepoNotAllowed      = infraerrors.BadRequest("UPDATE_REPO_NOT_ALLOWED", "update source repository is not one of the configured sources")
+)
+
+// repoOwnerPattern and repoNamePattern bound one GitHub path segment. Owners
+// exclude dots on purpose, so a stray "host/name" cannot pass as a repository.
+var (
+	repoOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,39}$`)
+	repoNamePattern  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 )
 
 const (
 	updateCacheKey = "update_check_cache"
 	updateCacheTTL = 1200 // 20 minutes
-	githubRepo     = "Wei-Shaw/sub2api"
+	// defaultGitHubRepo is the upstream release source. A fork publishes its own
+	// releases and registers them via update.repo, which UpdateService then offers
+	// alongside this one.
+	defaultGitHubRepo = "Wei-Shaw/sub2api"
 
 	// Security: allowed download domains for updates
 	allowedDownloadHost = "github.com"
@@ -45,10 +59,11 @@ const (
 	rollbackFetchPageSize = 15
 )
 
-// UpdateCache defines cache operations for update service
+// UpdateCache defines cache operations for update service.
+// repo scopes the entry so two release sources never serve each other's result.
 type UpdateCache interface {
-	GetUpdateInfo(ctx context.Context) (string, error)
-	SetUpdateInfo(ctx context.Context, data string, ttl time.Duration) error
+	GetUpdateInfo(ctx context.Context, repo string) (string, error)
+	SetUpdateInfo(ctx context.Context, repo string, data string, ttl time.Duration) error
 }
 
 // GitHubReleaseClient 获取 GitHub release 信息的接口
@@ -65,6 +80,7 @@ type UpdateService struct {
 	githubClient   GitHubReleaseClient
 	currentVersion string
 	buildType      string // "source" for manual builds, "release" for CI builds
+	configuredRepo string // fork source from update.repo, "" when unset
 }
 
 // NewUpdateService creates a new UpdateService
@@ -77,6 +93,84 @@ func NewUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, versi
 	}
 }
 
+// WithConfiguredRepo registers update.repo as an additional release source and
+// makes it the default one. An unparsable value is logged and ignored so a typo
+// in config cannot take the update panel down.
+func (s *UpdateService) WithConfiguredRepo(raw string) *UpdateService {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return s
+	}
+	repo, ok := normalizeRepo(raw)
+	if !ok {
+		slog.Warn("update: invalid update.repo ignored", "repo", raw)
+		return s
+	}
+	s.configuredRepo = repo
+	return s
+}
+
+// Sources returns the release sources an admin may select: the upstream repo
+// first, then the configured fork when it differs.
+func (s *UpdateService) Sources() []string {
+	if s.configuredRepo == "" || s.configuredRepo == defaultGitHubRepo {
+		return []string{defaultGitHubRepo}
+	}
+	return []string{defaultGitHubRepo, s.configuredRepo}
+}
+
+// resolveRepo maps a requested source onto the allowed set. Only upstream and
+// update.repo are accepted, so a request cannot point the downloader at an
+// arbitrary repository. Empty means the deployment default.
+func (s *UpdateService) resolveRepo(requested string) (string, error) {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		if s.configuredRepo != "" {
+			return s.configuredRepo, nil
+		}
+		return defaultGitHubRepo, nil
+	}
+	repo, ok := normalizeRepo(requested)
+	if !ok {
+		return "", ErrUpdateRepoInvalid
+	}
+	if repo != defaultGitHubRepo && repo != s.configuredRepo {
+		return "", ErrUpdateRepoNotAllowed
+	}
+	return repo, nil
+}
+
+// normalizeRepo accepts "owner/name" and, for convenience when an admin pastes a
+// release URL, "github.com/owner/name[/releases...]". It rejects anything that
+// is not exactly two safe path segments, because the result is interpolated into
+// the GitHub API path.
+func normalizeRepo(raw string) (string, bool) {
+	repo := strings.TrimSpace(raw)
+	repo = strings.TrimPrefix(repo, "https://")
+	repo = strings.TrimPrefix(repo, "http://")
+	if host, rest, ok := strings.Cut(repo, "/"); ok && (host == "github.com" || host == "www.github.com") {
+		repo = rest
+	}
+	repo = strings.Trim(repo, "/")
+	parts := strings.Split(repo, "/")
+	if len(parts) > 2 && parts[2] == "releases" {
+		parts = parts[:2]
+	}
+	if len(parts) != 2 {
+		return "", false
+	}
+	for i, part := range parts {
+		pattern := repoOwnerPattern
+		if i == 1 {
+			pattern = repoNamePattern
+		}
+		if part == "." || part == ".." || !pattern.MatchString(part) {
+			return "", false
+		}
+	}
+	return parts[0] + "/" + parts[1], true
+}
+
 // UpdateInfo contains update information
 type UpdateInfo struct {
 	CurrentVersion string       `json:"current_version"`
@@ -86,6 +180,10 @@ type UpdateInfo struct {
 	Cached         bool         `json:"cached"`
 	Warning        string       `json:"warning,omitempty"`
 	BuildType      string       `json:"build_type"` // "source" or "release"
+	// Repo is the release source these numbers came from; AvailableRepos lists the
+	// selectable sources with upstream first.
+	Repo           string   `json:"repo"`
+	AvailableRepos []string `json:"available_repos"`
 }
 
 // ReleaseInfo contains GitHub release details
@@ -129,20 +227,26 @@ type GitHubAsset struct {
 	Size               int64  `json:"size"`
 }
 
-// CheckUpdate checks for available updates
-func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInfo, error) {
+// CheckUpdate checks for available updates in the given release source
+// (empty selects the deployment default).
+func (s *UpdateService) CheckUpdate(ctx context.Context, force bool, requestedRepo string) (*UpdateInfo, error) {
+	repo, err := s.resolveRepo(requestedRepo)
+	if err != nil {
+		return nil, err
+	}
+
 	// Try cache first
 	if !force {
-		if cached, err := s.getFromCache(ctx); err == nil && cached != nil {
+		if cached, err := s.getFromCache(ctx, repo); err == nil && cached != nil {
 			return cached, nil
 		}
 	}
 
 	// Fetch from GitHub
-	info, err := s.fetchLatestRelease(ctx)
+	info, err := s.fetchLatestRelease(ctx, repo)
 	if err != nil {
 		// Return cached on error
-		if cached, cacheErr := s.getFromCache(ctx); cacheErr == nil && cached != nil {
+		if cached, cacheErr := s.getFromCache(ctx, repo); cacheErr == nil && cached != nil {
 			cached.Warning = "Using cached data: " + err.Error()
 			return cached, nil
 		}
@@ -152,18 +256,25 @@ func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInf
 			HasUpdate:      false,
 			Warning:        err.Error(),
 			BuildType:      s.buildType,
+			Repo:           repo,
+			AvailableRepos: s.Sources(),
 		}, nil
 	}
 
 	// Cache result
-	s.saveToCache(ctx, info)
+	s.saveToCache(ctx, repo, info)
 	return info, nil
 }
 
-// PerformUpdate downloads and applies the update
+// PerformUpdate downloads and applies the update from the given release source.
 // Uses atomic file replacement pattern for safe in-place updates
-func (s *UpdateService) PerformUpdate(ctx context.Context) error {
-	info, err := s.CheckUpdate(ctx, true)
+func (s *UpdateService) PerformUpdate(ctx context.Context, requestedRepo string) error {
+	repo, err := s.resolveRepo(requestedRepo)
+	if err != nil {
+		return err
+	}
+
+	info, err := s.CheckUpdate(ctx, true, repo)
 	if err != nil {
 		return err
 	}
@@ -306,8 +417,12 @@ func (s *UpdateService) Rollback() error {
 // ListRollbackVersions returns up to maxRollbackVersions release versions that are
 // strictly older than the current version (the current version itself is excluded),
 // newest first. Draft and prerelease entries are skipped.
-func (s *UpdateService) ListRollbackVersions(ctx context.Context) ([]RollbackVersion, error) {
-	releases, err := s.fetchRollbackCandidates(ctx)
+func (s *UpdateService) ListRollbackVersions(ctx context.Context, requestedRepo string) ([]RollbackVersion, error) {
+	repo, err := s.resolveRepo(requestedRepo)
+	if err != nil {
+		return nil, err
+	}
+	releases, err := s.fetchRollbackCandidates(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -326,13 +441,18 @@ func (s *UpdateService) ListRollbackVersions(ctx context.Context) ([]RollbackVer
 // RollbackToVersion downloads and installs a specific older version.
 // The target must be one of the versions returned by ListRollbackVersions;
 // anything else (including the current version) is rejected.
-func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) error {
+func (s *UpdateService) RollbackToVersion(ctx context.Context, requestedRepo, version string) error {
 	target := strings.TrimPrefix(strings.TrimSpace(version), "v")
 	if target == "" {
 		return ErrRollbackVersionNotAllowed
 	}
 
-	releases, err := s.fetchRollbackCandidates(ctx)
+	repo, err := s.resolveRepo(requestedRepo)
+	if err != nil {
+		return err
+	}
+
+	releases, err := s.fetchRollbackCandidates(ctx, repo)
 	if err != nil {
 		return err
 	}
@@ -362,8 +482,8 @@ func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) e
 
 // fetchRollbackCandidates fetches recent releases and keeps the newest
 // maxRollbackVersions entries strictly older than the current version.
-func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubRelease, error) {
-	releases, err := s.githubClient.FetchRecentReleases(ctx, githubRepo, rollbackFetchPageSize)
+func (s *UpdateService) fetchRollbackCandidates(ctx context.Context, repo string) ([]*GitHubRelease, error) {
+	releases, err := s.githubClient.FetchRecentReleases(ctx, repo, rollbackFetchPageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -399,8 +519,8 @@ func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubR
 	return candidates, nil
 }
 
-func (s *UpdateService) fetchLatestRelease(ctx context.Context) (*UpdateInfo, error) {
-	release, err := s.githubClient.FetchLatestRelease(ctx, githubRepo)
+func (s *UpdateService) fetchLatestRelease(ctx context.Context, repo string) (*UpdateInfo, error) {
+	release, err := s.githubClient.FetchLatestRelease(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -427,8 +547,10 @@ func (s *UpdateService) fetchLatestRelease(ctx context.Context) (*UpdateInfo, er
 			HTMLURL:     release.HTMLURL,
 			Assets:      assets,
 		},
-		Cached:    false,
-		BuildType: s.buildType,
+		Cached:         false,
+		BuildType:      s.buildType,
+		Repo:           repo,
+		AvailableRepos: s.Sources(),
 	}, nil
 }
 
@@ -593,8 +715,8 @@ func (s *UpdateService) extractBinary(archivePath, destPath string) error {
 	return out.Close()
 }
 
-func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
-	data, err := s.cache.GetUpdateInfo(ctx)
+func (s *UpdateService) getFromCache(ctx context.Context, repo string) (*UpdateInfo, error) {
+	data, err := s.cache.GetUpdateInfo(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -619,10 +741,12 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 		ReleaseInfo:    cached.ReleaseInfo,
 		Cached:         true,
 		BuildType:      s.buildType,
+		Repo:           repo,
+		AvailableRepos: s.Sources(),
 	}, nil
 }
 
-func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
+func (s *UpdateService) saveToCache(ctx context.Context, repo string, info *UpdateInfo) {
 	cacheData := struct {
 		Latest      string       `json:"latest"`
 		ReleaseInfo *ReleaseInfo `json:"release_info"`
@@ -634,7 +758,7 @@ func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
 	}
 
 	data, _ := json.Marshal(cacheData)
-	_ = s.cache.SetUpdateInfo(ctx, string(data), time.Duration(updateCacheTTL)*time.Second)
+	_ = s.cache.SetUpdateInfo(ctx, repo, string(data), time.Duration(updateCacheTTL)*time.Second)
 }
 
 // compareVersions compares two semantic versions

@@ -20,6 +20,9 @@ export default {
   // Version Badge
   version: {
     currentVersion: 'Current Version',
+    updateSource: 'Update source',
+    updateSourceUpstream: 'upstream',
+    updateSourceHint: 'Checks and downloads both come from the selected repository; a fork must publish its own release assets.',
     latestVersion: 'Latest Version',
     upToDate: "You're running the latest version.",
     updateAvailable: 'A new version is available!',
