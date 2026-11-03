@@ -119,6 +119,40 @@ describe('VersionBadge update source', () => {
     expect(wrapper.find('#update-source-select').exists()).toBe(false)
   })
 
+  it('names the selected source in the copyable rollback command', async () => {
+    const { getRollbackVersions } = await import('@/api/admin/system')
+    vi.mocked(getRollbackVersions).mockResolvedValueOnce({
+      versions: [
+        {
+          version: '0.1.176',
+          published_at: '2026-10-01T00:00:00Z',
+          html_url: `https://github.com/${FORK}/releases/tag/v0.1.176`
+        }
+      ]
+    })
+    localStorage.setItem(STORAGE_KEY, FORK)
+    stores.app.availableRepos = [UPSTREAM, FORK]
+
+    const wrapper = await openPanel()
+    const rollbackToggle = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('version.rollback'))!
+    await rollbackToggle.trigger('click')
+    await flushPromises()
+
+    const versionButton = wrapper
+      .findAll('button')
+      .filter((button) => /^v0\.1\.176/.test(button.text()))
+      .pop()!
+    await versionButton.trigger('click')
+    await flushPromises()
+
+    // install.sh defaults to upstream, so the command has to name the fork.
+    const command = wrapper.get('code').text()
+    expect(command).toContain(`raw.githubusercontent.com/${FORK}/v0.1.176/deploy/install.sh`)
+    expect(command).toContain(`--repo ${FORK}`)
+  })
+
   it('asks rollback versions from the source that is shown', async () => {
     const { getRollbackVersions } = await import('@/api/admin/system')
     localStorage.setItem(STORAGE_KEY, FORK)

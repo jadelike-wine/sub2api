@@ -31,7 +31,33 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-GITHUB_REPO="Wei-Shaw/sub2api"
+# Release source ("owner/name") every download and version lookup uses. Forks
+# override it with --repo (wins) or the GITHUB_REPO environment variable.
+DEFAULT_GITHUB_REPO="Wei-Shaw/sub2api"
+
+# Validate and apply a release source. It is interpolated into GitHub API and
+# download URLs, so only a plain owner/name without dot segments is accepted.
+set_github_repo() {
+    local repo="$1"
+    local segment
+    if [[ ! "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+        echo "Error: release source must be owner/name, got '$repo'" >&2
+        return 1
+    fi
+    for segment in "${repo%%/*}" "${repo#*/}"; do
+        if [ "$segment" = "." ] || [ "$segment" = ".." ]; then
+            echo "Error: release source must not contain dot segments, got '$repo'" >&2
+            return 1
+        fi
+    done
+    GITHUB_REPO="$repo"
+}
+
+GITHUB_REPO="${GITHUB_REPO:-$DEFAULT_GITHUB_REPO}"
+if ! set_github_repo "$GITHUB_REPO"; then
+    exit 1
+fi
+
 INSTALL_DIR="/opt/sub2api"
 SERVICE_NAME="sub2api"
 SERVICE_USER="sub2api"
@@ -718,7 +744,7 @@ install_service() {
     cat > /etc/systemd/system/sub2api.service << EOF
 [Unit]
 Description=Sub2API - AI API Gateway Platform
-Documentation=https://github.com/Wei-Shaw/sub2api
+Documentation=https://github.com/${GITHUB_REPO}
 After=network.target postgresql.service redis.service
 Wants=postgresql.service redis.service
 
@@ -1061,6 +1087,27 @@ main() {
                 fi
                 shift
                 ;;
+            --repo)
+                if [ -n "${2:-}" ] && [[ ! "$2" =~ ^- ]]; then
+                    set_github_repo "$2" || exit 1
+                    shift 2
+                else
+                    echo "Error: --repo requires an owner/name argument"
+                    exit 1
+                fi
+                ;;
+            --repo=*)
+                set_github_repo "${1#*=}" || exit 1
+                shift
+                ;;
+            --help)
+                positional_args+=("$1")
+                shift
+                ;;
+            --*)
+                echo "Error: unknown option: $1" >&2
+                exit 1
+                ;;
             *)
                 positional_args+=("$1")
                 shift
@@ -1178,6 +1225,7 @@ main() {
             echo "Options:"
             echo "  -v, --version <ver>  $(msg 'opt_version')"
             echo "  -y, --yes            Skip confirmation prompts (for uninstall)"
+            echo "      --repo <owner/name>  Release source repository (default: $DEFAULT_GITHUB_REPO)"
             echo ""
             echo "Examples:"
             echo "  $0                        # Install latest version"
@@ -1186,6 +1234,7 @@ main() {
             echo "  $0 upgrade -v v0.2.0      # Upgrade to specific version"
             echo "  $0 rollback v0.1.0        # Rollback to v0.1.0"
             echo "  $0 list-versions          # List available versions"
+            echo "  $0 upgrade --repo my-fork/sub2api   # Upgrade from a fork's releases"
             echo ""
             exit 0
             ;;

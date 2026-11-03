@@ -427,6 +427,30 @@ sudo ./install.sh upgrade
 sudo ./install.sh uninstall
 ```
 
+### Installing from a fork
+
+Releases are resolved from `Wei-Shaw/sub2api` unless you say otherwise. `--repo`
+(accepted anywhere in the command line) points install / upgrade / rollback /
+list-versions at another repository:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/my-fork/sub2api/main/deploy/install.sh \
+  | sudo bash -s -- upgrade --repo my-fork/sub2api
+```
+
+`GITHUB_REPO` is the environment equivalent, but plain `sudo` strips it, so
+preserve it explicitly:
+
+```bash
+sudo --preserve-env=GITHUB_REPO GITHUB_REPO=my-fork/sub2api ./install.sh upgrade
+```
+
+The value must be `owner/name` without dot segments, since it is interpolated
+into the GitHub API and download URLs. The fork has to publish assets named
+`sub2api_{version}_{os}_{arch}.tar.gz` plus `checksums.txt` (the default
+goreleaser layout). Set the same repository under `update.repo` (or `UPDATE_REPO`)
+in `config.yaml` so the admin version panel checks that source too.
+
 ### Service Management
 
 ```bash

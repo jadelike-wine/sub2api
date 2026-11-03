@@ -749,7 +749,10 @@ const manualTabs = computed(() => [
 const scriptRollbackCommand = computed(() => {
   if (!selectedRollbackVersion.value) return ''
   const tag = `v${selectedRollbackVersion.value}`
-  return `curl -sSL https://raw.githubusercontent.com/${releaseRepo.value}/${tag}/deploy/install.sh | sudo bash -s -- rollback ${tag}`
+  // install.sh defaults to upstream, so a fork release has to name its source.
+  const repoFlag =
+    releaseRepo.value === UPSTREAM_REPO ? '' : ` --repo ${releaseRepo.value}`
+  return `curl -sSL https://raw.githubusercontent.com/${releaseRepo.value}/${tag}/deploy/install.sh | sudo bash -s -- rollback ${tag}${repoFlag}`
 })
 
 const dockerRollbackCommand = computed(() => {
